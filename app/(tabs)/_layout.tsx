@@ -1,33 +1,69 @@
+import Ionicons from '@expo/vector-icons/Ionicons';
 import { Tabs } from 'expo-router';
-import React from 'react';
 
-import { HapticTab } from '@/components/haptic-tab';
-import { IconSymbol } from '@/components/ui/icon-symbol';
-import { Colors } from '@/constants/theme';
-import { useColorScheme } from '@/hooks/use-color-scheme';
+import { VestroColors, VestroFonts } from '@/constants/theme';
+import { useI18n } from '@/i18n/context';
 
 export default function TabLayout() {
-  const colorScheme = useColorScheme();
+  const { t } = useI18n();
 
   return (
     <Tabs
       screenOptions={{
-        tabBarActiveTintColor: Colors[colorScheme ?? 'light'].tint,
         headerShown: false,
-        tabBarButton: HapticTab,
-      }}>
+        tabBarActiveTintColor: VestroColors.ink,
+        tabBarInactiveTintColor: VestroColors.muted,
+        tabBarStyle: {
+          backgroundColor: VestroColors.background,
+          borderTopWidth: 1,
+          borderTopColor: VestroColors.border,
+          height: 88,
+          paddingTop: 10,
+        },
+        tabBarLabelStyle: {
+          fontFamily: VestroFonts.sansSemiBold,
+          fontSize: 10,
+          letterSpacing: 1.2,
+          textTransform: 'uppercase',
+        },
+      }}
+    >
       <Tabs.Screen
         name="index"
         options={{
-          title: 'Home',
-          tabBarIcon: ({ color }) => <IconSymbol size={28} name="house.fill" color={color} />,
+          title: t('tabs.home'),
+          tabBarIcon: ({ color, size }) => (
+            <Ionicons name="home-outline" color={color} size={size - 3} />
+          ),
         }}
       />
+
       <Tabs.Screen
         name="explore"
         options={{
-          title: 'Explore',
-          tabBarIcon: ({ color }) => <IconSymbol size={28} name="paperplane.fill" color={color} />,
+          title: t('tabs.dressing'),
+          tabBarIcon: ({ color, size }) => (
+            <Ionicons name="shirt-outline" color={color} size={size - 3} />
+          ),
+        }}
+      />
+      <Tabs.Screen
+        name="tenues"
+        options={{
+          title: t('tabs.outfits'),
+          tabBarIcon: ({ color, size }) => (
+            <Ionicons name="albums-outline" color={color} size={size - 3} />
+          ),
+        }}
+      />
+
+      <Tabs.Screen
+        name="wishlist"
+        options={{
+          title: t('tabs.wishlist'),
+          tabBarIcon: ({ color, size }) => (
+            <Ionicons name="heart-outline" color={color} size={size - 3} />
+          ),
         }}
       />
     </Tabs>

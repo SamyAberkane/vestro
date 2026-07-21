@@ -27,6 +27,52 @@ export const Colors = {
   },
 };
 
+/**
+ * Editorial redesign palette, ported from the "Vestro Redesign" Claude Design mock
+ * (oklch values converted to sRGB hex).
+ */
+export const VestroColors = {
+  background: '#F9F5EB',
+  ink: '#1E1A13',
+  muted: '#686357',
+  border: '#D2CDC3',
+  surface: '#FEFBF6',
+  accent: '#906754',
+  frame: '#3F4A38',
+  buttonText: '#FBF8F1',
+  tints: {
+    Hauts: '#D6E2D6',
+    Bas: '#E2DED5',
+    Chaussures: '#D9D4C9',
+    Accessoires: '#F3D7CB',
+  } as Record<string, string>,
+};
+
+export const VestroCategories = ['Hauts', 'Bas', 'Chaussures', 'Accessoires'] as const;
+
+export const VestroPalette: { label: string; hex: string }[] = [
+  { label: 'Blanc', hex: '#FFFFFF' },
+  { label: 'Noir', hex: '#111111' },
+  { label: 'Rouge', hex: '#DC2626' },
+  { label: 'Bleu', hex: '#2563EB' },
+  { label: 'Beige', hex: '#E3C9A0' },
+  { label: 'Vert', hex: '#16A34A' },
+  { label: 'Gris', hex: '#9CA3AF' },
+  { label: 'Marron', hex: '#7B4B29' },
+  { label: 'Jaune', hex: '#EAB308' },
+];
+
+export const VestroFonts = {
+  serifMedium: 'PlayfairDisplay_500Medium',
+  serifMediumItalic: 'PlayfairDisplay_500Medium_Italic',
+  serifSemiBold: 'PlayfairDisplay_600SemiBold',
+  serifSemiBoldItalic: 'PlayfairDisplay_600SemiBold_Italic',
+  sans: 'Archivo_400Regular',
+  sansMedium: 'Archivo_500Medium',
+  sansSemiBold: 'Archivo_600SemiBold',
+  sansBold: 'Archivo_700Bold',
+};
+
 export const Fonts = Platform.select({
   ios: {
     /** iOS `UIFontDescriptorSystemDesignDefault` */
