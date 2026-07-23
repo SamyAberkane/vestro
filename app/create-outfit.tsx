@@ -1,4 +1,3 @@
-import AsyncStorage from '@react-native-async-storage/async-storage';
 import { router, useLocalSearchParams } from 'expo-router';
 import { useEffect, useState } from 'react';
 import {
@@ -15,24 +14,9 @@ import {
 import { CanvasLayout, OutfitCanvas } from '@/components/outfit-canvas';
 import { VestroCategories, VestroColors, VestroFonts } from '@/constants/theme';
 import { useI18n } from '@/i18n/context';
-
-type ClothingItem = {
-  id: number;
-  name: string;
-  category: string;
-  color?: string;
-  image?: string;
-  price?: number;
-  status?: 'owned' | 'wishlist';
-  available?: boolean;
-};
-
-type Outfit = {
-  id: number;
-  name: string;
-  itemIds: number[];
-  layout?: Record<number, CanvasLayout>;
-};
+import { fetchClothingItems } from '@/lib/clothing';
+import { fetchOutfits, insertOutfit, updateOutfit } from '@/lib/outfits';
+import type { ClothingItem } from '@/types/clothing';
 
 export default function CreateOutfitScreen() {
   const { t, tCategory } = useI18n();
@@ -47,35 +31,37 @@ export default function CreateOutfitScreen() {
 
   useEffect(() => {
     async function loadData() {
-      const savedClothes = await AsyncStorage.getItem('vestro-clothes');
-      const parsedClothes: ClothingItem[] = savedClothes ? JSON.parse(savedClothes) : [];
-      setClothes(
-        parsedClothes.filter(
-          (item) => (!item.status || item.status === 'owned') && item.available !== false
-        )
-      );
+      try {
+        const parsedClothes = await fetchClothingItems();
+        setClothes(
+          parsedClothes.filter(
+            (item) => (!item.status || item.status === 'owned') && item.available !== false
+          )
+        );
 
-      if (id) {
-        const savedOutfits = await AsyncStorage.getItem('vestro-outfits');
-        const outfits: Outfit[] = savedOutfits ? JSON.parse(savedOutfits) : [];
-        const outfit = outfits.find((item) => item.id === Number(id));
+        if (id) {
+          const outfits = await fetchOutfits();
+          const outfit = outfits.find((item) => item.id === Number(id));
 
-        if (outfit) {
-          setName(outfit.name);
+          if (outfit) {
+            setName(outfit.name);
 
-          const initialSelected: Record<string, number[]> = {};
-          outfit.itemIds.forEach((itemId) => {
-            const item = parsedClothes.find((c) => c.id === itemId);
-            if (item) {
-              initialSelected[item.category] = [
-                ...(initialSelected[item.category] ?? []),
-                item.id,
-              ];
-            }
-          });
-          setSelected(initialSelected);
-          setLayout(outfit.layout ?? {});
+            const initialSelected: Record<string, number[]> = {};
+            outfit.itemIds.forEach((itemId) => {
+              const item = parsedClothes.find((c) => c.id === itemId);
+              if (item) {
+                initialSelected[item.category] = [
+                  ...(initialSelected[item.category] ?? []),
+                  item.id,
+                ];
+              }
+            });
+            setSelected(initialSelected);
+            setLayout(outfit.layout ?? {});
+          }
         }
+      } catch (error) {
+        Alert.alert(t('common.errorTitle'), String(error instanceof Error ? error.message : error));
       }
 
       setIsLoaded(true);
@@ -112,34 +98,20 @@ export default function CreateOutfitScreen() {
       return;
     }
 
-    const savedOutfits = await AsyncStorage.getItem('vestro-outfits');
-    const outfits: Outfit[] = savedOutfits ? JSON.parse(savedOutfits) : [];
-
     const itemIdSet = new Set(itemIds);
     const savedLayout = Object.fromEntries(
       Object.entries(layout).filter(([itemId]) => itemIdSet.has(Number(itemId)))
     );
 
-    if (id) {
-      const updatedOutfits = outfits.map((outfit) =>
-        outfit.id === Number(id)
-          ? { ...outfit, name: name.trim(), itemIds, layout: savedLayout }
-          : outfit
-      );
-
-      await AsyncStorage.setItem('vestro-outfits', JSON.stringify(updatedOutfits));
-    } else {
-      const newOutfit: Outfit = {
-        id: Date.now(),
-        name: name.trim(),
-        itemIds,
-        layout: savedLayout,
-      };
-
-      await AsyncStorage.setItem(
-        'vestro-outfits',
-        JSON.stringify([newOutfit, ...outfits])
-      );
+    try {
+      if (id) {
+        await updateOutfit(Number(id), { name: name.trim(), itemIds, layout: savedLayout });
+      } else {
+        await insertOutfit({ name: name.trim(), itemIds, layout: savedLayout });
+      }
+    } catch (error) {
+      Alert.alert(t('common.errorTitle'), String(error instanceof Error ? error.message : error));
+      return;
     }
 
     router.back();

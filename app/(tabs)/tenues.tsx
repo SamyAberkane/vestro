@@ -1,4 +1,3 @@
-import AsyncStorage from '@react-native-async-storage/async-storage';
 import { router, useFocusEffect } from 'expo-router';
 import { useCallback, useState } from 'react';
 import {
@@ -11,26 +10,12 @@ import {
   View,
 } from 'react-native';
 
-import { CanvasLayout, OutfitPreview } from '@/components/outfit-canvas';
+import { OutfitPreview } from '@/components/outfit-canvas';
 import { VestroColors, VestroFonts } from '@/constants/theme';
 import { useI18n } from '@/i18n/context';
-
-type ClothingItem = {
-  id: number;
-  name: string;
-  category: string;
-  color?: string;
-  image?: string;
-  price?: number;
-  status?: 'owned' | 'wishlist';
-};
-
-type Outfit = {
-  id: number;
-  name: string;
-  itemIds: number[];
-  layout?: Record<number, CanvasLayout>;
-};
+import { fetchClothingItems } from '@/lib/clothing';
+import { deleteOutfit, fetchOutfits } from '@/lib/outfits';
+import type { ClothingItem, Outfit } from '@/types/clothing';
 
 function OutfitCard({
   outfit,
@@ -74,21 +59,21 @@ export default function TenuesScreen() {
   useFocusEffect(
     useCallback(() => {
       async function load() {
-        const savedClothes = await AsyncStorage.getItem('vestro-clothes');
-        const savedOutfits = await AsyncStorage.getItem('vestro-outfits');
-
-        setClothes(savedClothes ? JSON.parse(savedClothes) : []);
-        setOutfits(savedOutfits ? JSON.parse(savedOutfits) : []);
+        try {
+          const [loadedClothes, loadedOutfits] = await Promise.all([
+            fetchClothingItems(),
+            fetchOutfits(),
+          ]);
+          setClothes(loadedClothes);
+          setOutfits(loadedOutfits);
+        } catch (error) {
+          Alert.alert(t('common.errorTitle'), String(error instanceof Error ? error.message : error));
+        }
       }
 
       load();
     }, [])
   );
-
-  async function saveOutfits(updatedOutfits: Outfit[]) {
-    setOutfits(updatedOutfits);
-    await AsyncStorage.setItem('vestro-outfits', JSON.stringify(updatedOutfits));
-  }
 
   function openOutfit(outfit: Outfit) {
     Alert.alert(outfit.name, undefined, [
@@ -102,7 +87,10 @@ export default function TenuesScreen() {
         text: t('common.delete'),
         style: 'destructive',
         onPress: () => {
-          saveOutfits(outfits.filter((item) => item.id !== outfit.id));
+          setOutfits((currentOutfits) => currentOutfits.filter((item) => item.id !== outfit.id));
+          deleteOutfit(outfit.id).catch((error) =>
+            Alert.alert(t('common.errorTitle'), String(error instanceof Error ? error.message : error))
+          );
         },
       },
       { text: t('common.cancel'), style: 'cancel' },

@@ -1,6 +1,5 @@
-import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Location from 'expo-location';
-import { useFocusEffect } from 'expo-router';
+import { router, useFocusEffect } from 'expo-router';
 import { useCallback, useEffect, useState } from 'react';
 import {
   Alert,
@@ -18,30 +17,11 @@ import { CanvasLayout, OutfitCanvas } from '@/components/outfit-canvas';
 import { VestroCategories, VestroColors, VestroFonts } from '@/constants/theme';
 import { useI18n } from '@/i18n/context';
 import { LANGUAGES, MONTHS } from '@/i18n/translations';
+import { fetchActiveLook, saveActiveLook } from '@/lib/active-look';
+import { fetchClothingItems } from '@/lib/clothing';
+import { insertOutfit } from '@/lib/outfits';
+import type { ActiveLook, ClothingItem } from '@/types/clothing';
 import { CurrentWeather, fetchCurrentWeather } from '@/utils/weather';
-
-type ClothingItem = {
-  id: number;
-  name: string;
-  category: string;
-  color?: string;
-  image?: string;
-  price?: number;
-  status?: 'owned' | 'wishlist';
-  available?: boolean;
-};
-
-type Outfit = {
-  id: number;
-  name: string;
-  itemIds: number[];
-  layout?: Record<number, CanvasLayout>;
-};
-
-type ActiveLook = {
-  itemIds: number[];
-  layout: Record<number, CanvasLayout>;
-};
 
 function dayOfYear(date: Date) {
   const start = new Date(date.getFullYear(), 0, 0);
@@ -88,28 +68,30 @@ export default function HomeScreen() {
   useFocusEffect(
     useCallback(() => {
       async function loadData() {
-        const savedClothes = await AsyncStorage.getItem('vestro-clothes');
-        const parsedClothes: ClothingItem[] = savedClothes ? JSON.parse(savedClothes) : [];
-        setClothes(parsedClothes);
+        try {
+          const parsedClothes = await fetchClothingItems();
+          setClothes(parsedClothes);
 
-        const savedLook = await AsyncStorage.getItem('vestro-active-look');
+          const look: ActiveLook | null = await fetchActiveLook();
 
-        if (savedLook) {
-          const look: ActiveLook = JSON.parse(savedLook);
-          const initialSelected: Record<string, number[]> = {};
+          if (look) {
+            const initialSelected: Record<string, number[]> = {};
 
-          look.itemIds.forEach((itemId) => {
-            const item = parsedClothes.find((c) => c.id === itemId);
-            if (item) {
-              initialSelected[item.category] = [
-                ...(initialSelected[item.category] ?? []),
-                item.id,
-              ];
-            }
-          });
+            look.itemIds.forEach((itemId) => {
+              const item = parsedClothes.find((c) => c.id === itemId);
+              if (item) {
+                initialSelected[item.category] = [
+                  ...(initialSelected[item.category] ?? []),
+                  item.id,
+                ];
+              }
+            });
 
-          setSelected(initialSelected);
-          setLayout(look.layout ?? {});
+            setSelected(initialSelected);
+            setLayout(look.layout ?? {});
+          }
+        } catch (error) {
+          Alert.alert(t('common.errorTitle'), String(error instanceof Error ? error.message : error));
         }
 
         setIsLoaded(true);
@@ -173,8 +155,12 @@ export default function HomeScreen() {
       return;
     }
 
-    await AsyncStorage.setItem('vestro-active-look', JSON.stringify(currentLookPayload()));
-    Alert.alert(t('home.wornTitle'), t('home.wornMessage'));
+    try {
+      await saveActiveLook(currentLookPayload());
+      Alert.alert(t('home.wornTitle'), t('home.wornMessage'));
+    } catch (error) {
+      Alert.alert(t('common.errorTitle'), String(error instanceof Error ? error.message : error));
+    }
   }
 
   function saveOutfit() {
@@ -189,21 +175,12 @@ export default function HomeScreen() {
       async (name) => {
         if (!name?.trim()) return;
 
-        const savedOutfits = await AsyncStorage.getItem('vestro-outfits');
-        const outfits: Outfit[] = savedOutfits ? JSON.parse(savedOutfits) : [];
-
-        const newOutfit: Outfit = {
-          id: Date.now(),
-          name: name.trim(),
-          ...currentLookPayload(),
-        };
-
-        await AsyncStorage.setItem(
-          'vestro-outfits',
-          JSON.stringify([newOutfit, ...outfits])
-        );
-
-        Alert.alert(t('home.savedTitle'), t('home.savedMessage'));
+        try {
+          await insertOutfit({ name: name.trim(), ...currentLookPayload() });
+          Alert.alert(t('home.savedTitle'), t('home.savedMessage'));
+        } catch (error) {
+          Alert.alert(t('common.errorTitle'), String(error instanceof Error ? error.message : error));
+        }
       },
       'plain-text'
     );
@@ -226,6 +203,9 @@ export default function HomeScreen() {
             N° {dayOfYear(today).toString().padStart(3, '0')}
           </Text>
           <Text style={styles.issueText}>{formatIssueDate(today)}</Text>
+          <TouchableOpacity onPress={() => router.push('/account')}>
+            <Text style={styles.signOutLink}>{t('account.entryPoint')}</Text>
+          </TouchableOpacity>
         </View>
       </View>
 
@@ -363,6 +343,13 @@ const styles = StyleSheet.create({
     letterSpacing: 1.5,
     color: VestroColors.muted,
     marginTop: 2,
+  },
+  signOutLink: {
+    marginTop: 6,
+    fontFamily: VestroFonts.sans,
+    fontSize: 9,
+    color: VestroColors.muted,
+    textDecorationLine: 'underline',
   },
   welcomeRow: {
     marginTop: 18,

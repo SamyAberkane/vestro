@@ -131,7 +131,7 @@ async function resizeForUpload(uri: string, tag: string): Promise<string> {
   }
 }
 
-function splitDataUri(dataUri: string): { mimeType: string; base64: string } {
+export function splitDataUri(dataUri: string): { mimeType: string; base64: string } {
   const match = dataUri.match(/^data:([^;]+);base64,([\s\S]*)$/);
   if (!match) {
     throw new Error('Format de data URI non reconnu (attendu "data:<mime>;base64,...")');

@@ -1,4 +1,3 @@
-import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as ImagePicker from 'expo-image-picker';
 import { useFocusEffect } from 'expo-router';
 import { useCallback, useRef, useState } from 'react';
@@ -17,19 +16,14 @@ import { ColorPickerModal } from '@/components/color-picker-modal';
 import { ProcessingOverlay } from '@/components/processing-overlay';
 import { VestroCategories, VestroColors, VestroFonts } from '@/constants/theme';
 import { useI18n } from '@/i18n/context';
+import {
+  deleteClothingItem,
+  fetchClothingItems,
+  insertClothingItems,
+  updateClothingItem,
+} from '@/lib/clothing';
+import type { ClothingItem } from '@/types/clothing';
 import { analyzeClothingPhoto, removeBackground } from '@/utils/remove-background';
-
-type ClothingItem = {
-  id: number;
-  name: string;
-  category: string;
-  color?: string;
-  image?: string;
-  price?: number;
-  status?: 'owned' | 'wishlist';
-  available?: boolean;
-  unavailableReason?: string;
-};
 
 export default function WishlistScreen() {
   const { t, tCategory, language } = useI18n();
@@ -71,10 +65,10 @@ export default function WishlistScreen() {
   useFocusEffect(
     useCallback(() => {
       async function loadClothes() {
-        const savedClothes = await AsyncStorage.getItem('vestro-clothes');
-
-        if (savedClothes) {
-          setClothes(JSON.parse(savedClothes));
+        try {
+          setClothes(await fetchClothingItems());
+        } catch (error) {
+          Alert.alert(t('common.errorTitle'), String(error instanceof Error ? error.message : error));
         }
 
         setIsLoaded(true);
@@ -93,16 +87,16 @@ export default function WishlistScreen() {
       ? wishlistItems
       : wishlistItems.filter((item) => item.category === selectedCategory);
 
-  async function saveClothes(updatedClothes: ClothingItem[]) {
-    setClothes(updatedClothes);
-    await AsyncStorage.setItem(
-      'vestro-clothes',
-      JSON.stringify(updatedClothes)
+  async function updateItem(id: number, patch: Parameters<typeof updateClothingItem>[1]) {
+    setClothes((currentClothes) =>
+      currentClothes.map((clothing) => (clothing.id === id ? { ...clothing, ...patch } : clothing))
     );
-  }
 
-  function updateItem(id: number, patch: Partial<ClothingItem>) {
-    saveClothes(clothes.map((clothing) => (clothing.id === id ? { ...clothing, ...patch } : clothing)));
+    try {
+      await updateClothingItem(id, patch);
+    } catch (error) {
+      Alert.alert(t('common.errorTitle'), String(error instanceof Error ? error.message : error));
+    }
   }
 
   async function addWishlistItem() {
@@ -138,7 +132,7 @@ export default function WishlistScreen() {
       if (!confirmed) return;
     }
 
-    const newItems: ClothingItem[] = [];
+    const newItems = [];
 
     for (let i = 0; i < assets.length; i++) {
       setBatchStep({ index: i + 1, count: assets.length });
@@ -147,17 +141,23 @@ export default function WishlistScreen() {
       const analysis = await analyzeClothingPhoto(assets[i].uri, language);
 
       newItems.push({
-        id: Date.now() + i,
         name: analysis.name ?? t('wishlist.fallbackName', { index: i + 1 }),
         category: analysis.category ?? VestroCategories[0],
         color: analysis.color,
-        image: analysis.image,
-        status: 'wishlist',
+        status: 'wishlist' as const,
+        available: true,
+        imageDataUri: analysis.image,
       });
     }
 
     setProcessingImageUri(undefined);
-    saveClothes([...newItems, ...clothes]);
+
+    try {
+      const inserted = await insertClothingItems(newItems);
+      setClothes((currentClothes) => [...inserted, ...currentClothes]);
+    } catch (error) {
+      Alert.alert(t('common.errorTitle'), String(error instanceof Error ? error.message : error));
+    }
   }
 
   async function handleOptionsPhotoChange() {
@@ -182,7 +182,7 @@ export default function WishlistScreen() {
       setProcessingImageUri(result.assets[0].uri);
       const newImage = await removeBackground(result.assets[0].uri);
       setProcessingImageUri(undefined);
-      updateItem(targetId, { image: newImage });
+      updateItem(targetId, { imageDataUri: newImage });
     }
   }
 
@@ -311,8 +311,11 @@ export default function WishlistScreen() {
         onDelete={() => {
           if (!optionsItem) return;
           const targetId = optionsItem.id;
-          saveClothes(clothes.filter((clothing) => clothing.id !== targetId));
+          setClothes((currentClothes) => currentClothes.filter((clothing) => clothing.id !== targetId));
           setOptionsItemId(null);
+          deleteClothingItem(targetId).catch((error) =>
+            Alert.alert(t('common.errorTitle'), String(error instanceof Error ? error.message : error))
+          );
         }}
       />
     </View>

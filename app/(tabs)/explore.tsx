@@ -1,7 +1,6 @@
 import { useFocusEffect } from 'expo-router';
-import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as ImagePicker from 'expo-image-picker';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useRef, useState } from 'react';
 import {
   Alert,
   Image,
@@ -14,27 +13,18 @@ import {
 
 import { ClothingOptionsSheet } from '@/components/clothing-options-sheet';
 import { ColorPickerModal } from '@/components/color-picker-modal';
+import { PaywallModal } from '@/components/paywall-modal';
 import { ProcessingOverlay } from '@/components/processing-overlay';
 import { VestroCategories, VestroColors, VestroFonts, VestroPalette } from '@/constants/theme';
 import { useI18n } from '@/i18n/context';
-import { analyzeClothingPhoto, removeBackground } from '@/utils/remove-background';
-
-type ClothingItem = {
-  id: number;
-  name: string;
-  category: string;
-  color?: string;
-  image?: string;
-  price?: number;
-  status?: 'owned' | 'wishlist';
-  available?: boolean;
-  unavailableReason?: string;
-};
+import { deleteClothingItem, fetchClothingItems, updateClothingItem } from '@/lib/clothing';
+import { getIsPremium } from '@/lib/premium';
+import type { ClothingItem } from '@/types/clothing';
+import { removeBackground } from '@/utils/remove-background';
 
 export default function DressingScreen() {
-  const { t, tCategory, language } = useI18n();
+  const { t, tCategory } = useI18n();
   const [clothes, setClothes] = useState<ClothingItem[]>([]);
-const [isLoaded, setIsLoaded] = useState(false);
 const [selectedCategory, setSelectedCategory] = useState('Tout');
 const [showAvailableOnly, setShowAvailableOnly] = useState(false);
 const [colorFilter, setColorFilter] = useState<string | undefined>(undefined);
@@ -46,6 +36,14 @@ const [colorPickerVisible, setColorPickerVisible] = useState(false);
 const colorSelectRef = useRef<((color: string | undefined) => void) | null>(null);
 const colorDismissRef = useRef<(() => void) | null>(null);
 const [optionsItemId, setOptionsItemId] = useState<number | null>(null);
+const [paywallVisible, setPaywallVisible] = useState(false);
+const [isPremium, setIsPremium] = useState(false);
+
+useFocusEffect(
+  useCallback(() => {
+    getIsPremium().then(setIsPremium);
+  }, [])
+);
 const optionsItem = clothes.find((clothing) => clothing.id === optionsItemId) ?? null;
 
 function openColorPicker(
@@ -83,86 +81,27 @@ const filteredClothes = ownedClothes
 useFocusEffect(
   useCallback(() => {
     async function loadClothes() {
-      const savedClothes = await AsyncStorage.getItem('vestro-clothes');
-
-      if (savedClothes) {
-        setClothes(JSON.parse(savedClothes));
-      } else {
-        setClothes([]);
+      try {
+        setClothes(await fetchClothingItems());
+      } catch (error) {
+        Alert.alert(t('common.errorTitle'), String(error instanceof Error ? error.message : error));
       }
-
-      setIsLoaded(true);
     }
 
     loadClothes();
   }, [])
 );
 
-useEffect(() => {
-  if (isLoaded) {
-    AsyncStorage.setItem('vestro-clothes', JSON.stringify(clothes));
-  }
-}, [clothes, isLoaded]);
-
-  async function addClothing() {
-    const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
-
-    if (!permission.granted) {
-      Alert.alert(t('common.permissionTitle'), t('common.permissionPhotos'));
-      return;
-    }
-
-    const result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ['images'],
-      allowsMultipleSelection: true,
-      selectionLimit: 0,
-      quality: 0.8,
-    });
-
-    if (result.canceled || result.assets.length === 0) return;
-
-    const assets = result.assets;
-
-    if (assets.length > 1) {
-      const confirmed = await new Promise<boolean>((resolve) => {
-        Alert.alert(
-          t('dressing.multiSelectTitle', { count: assets.length }),
-          t('dressing.multiSelectMessage', { count: assets.length }),
-          [
-            { text: t('common.cancel'), style: 'cancel', onPress: () => resolve(false) },
-            { text: t('common.continue'), onPress: () => resolve(true) },
-          ]
-        );
-      });
-      if (!confirmed) return;
-    }
-
-    for (let i = 0; i < assets.length; i++) {
-      setBatchStep({ index: i + 1, count: assets.length });
-      setProcessingImageUri(assets[i].uri);
-
-      const analysis = await analyzeClothingPhoto(assets[i].uri, language);
-
-      const newItem: ClothingItem = {
-        id: Date.now() + i,
-        name: analysis.name ?? t('dressing.fallbackName', { index: i + 1 }),
-        category: analysis.category ?? VestroCategories[0],
-        color: analysis.color,
-        status: 'owned',
-        available: true,
-        image: analysis.image,
-      };
-
-      setClothes((currentClothes) => [newItem, ...currentClothes]);
-    }
-
-    setProcessingImageUri(undefined);
-  }
-
-function updateOptionsItem(id: number, patch: Partial<ClothingItem>) {
+async function updateOptionsItem(id: number, patch: Parameters<typeof updateClothingItem>[1]) {
   setClothes((currentClothes) =>
     currentClothes.map((clothing) => (clothing.id === id ? { ...clothing, ...patch } : clothing))
   );
+
+  try {
+    await updateClothingItem(id, patch);
+  } catch (error) {
+    Alert.alert(t('common.errorTitle'), String(error instanceof Error ? error.message : error));
+  }
 }
 
 function openClothingOptions(item: ClothingItem) {
@@ -191,7 +130,7 @@ async function handleOptionsPhotoChange() {
     setProcessingImageUri(result.assets[0].uri);
     const newImage = await removeBackground(result.assets[0].uri);
     setProcessingImageUri(undefined);
-    updateOptionsItem(targetId, { image: newImage });
+    updateOptionsItem(targetId, { imageDataUri: newImage });
   }
 }
 
@@ -204,6 +143,11 @@ async function handleOptionsPhotoChange() {
         <View>
           <Text style={styles.title}>{t('dressing.title')}</Text>
           <Text style={styles.count}>{t('dressing.count', { count: ownedClothes.length })}</Text>
+          <TouchableOpacity style={styles.premiumBadge} onPress={() => setPaywallVisible(true)}>
+            <Text style={styles.premiumBadgeText}>
+              {t(isPremium ? 'premium.entryPointActive' : 'premium.entryPoint')}
+            </Text>
+          </TouchableOpacity>
         </View>
 
         <View style={styles.headerActions}>
@@ -229,10 +173,6 @@ async function handleOptionsPhotoChange() {
               </View>
             </TouchableOpacity>
           </View>
-
-          <TouchableOpacity style={styles.addButton} onPress={addClothing}>
-            <Text style={styles.addButtonGlyph}>+</Text>
-          </TouchableOpacity>
         </View>
       </View>
 
@@ -400,7 +340,16 @@ async function handleOptionsPhotoChange() {
           const targetId = optionsItem.id;
           setClothes((currentClothes) => currentClothes.filter((clothing) => clothing.id !== targetId));
           setOptionsItemId(null);
+          deleteClothingItem(targetId).catch((error) =>
+            Alert.alert(t('common.errorTitle'), String(error instanceof Error ? error.message : error))
+          );
         }}
+      />
+
+      <PaywallModal
+        visible={paywallVisible}
+        onClose={() => setPaywallVisible(false)}
+        onPremiumChange={setIsPremium}
       />
     </View>
   );
@@ -434,19 +383,19 @@ const styles = StyleSheet.create({
     textTransform: 'uppercase',
     color: VestroColors.muted,
   },
-  addButton: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-    borderWidth: 1,
-    borderColor: VestroColors.ink,
-    alignItems: 'center',
-    justifyContent: 'center',
+  premiumBadge: {
+    marginTop: 10,
+    alignSelf: 'flex-start',
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 12,
+    backgroundColor: VestroColors.accent,
   },
-  addButtonGlyph: {
-    fontFamily: VestroFonts.serifMedium,
-    fontSize: 18,
-    color: VestroColors.ink,
+  premiumBadgeText: {
+    fontFamily: VestroFonts.sansSemiBold,
+    fontSize: 10,
+    letterSpacing: 0.5,
+    color: VestroColors.buttonText,
   },
   headerActions: {
     flexDirection: 'row',
