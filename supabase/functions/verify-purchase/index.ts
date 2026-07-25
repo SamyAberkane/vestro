@@ -16,7 +16,7 @@ const APPLE_KEY_ID = Deno.env.get('APPLE_KEY_ID')!;
 const APPLE_PRIVATE_KEY = Deno.env.get('APPLE_PRIVATE_KEY')!;
 
 const APPLE_BUNDLE_ID = 'com.tailor.vestro';
-const MONTHLY_SKU = 'com.tailor.vestro.montlhy';
+const MONTHLY_SKU = 'com.tailor.vestro.monthly';
 
 const CORS_HEADERS = {
   'Access-Control-Allow-Origin': '*',

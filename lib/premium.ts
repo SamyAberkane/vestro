@@ -18,7 +18,7 @@ import { supabase } from '@/lib/supabase';
 // exists on iOS — on web/Android there's no real product to buy, so those
 // platforms keep the same local-simulation fallback the paywall used before,
 // which is what lets it still be tested outside a native iOS build.
-export const MONTHLY_SKU = 'com.tailor.vestro.montlhy';
+export const MONTHLY_SKU = 'com.tailor.vestro.monthly';
 
 const SIMULATED_KEY = 'vestro.premium.simulated';
 const CACHE_KEY = 'vestro.premium.cache';
