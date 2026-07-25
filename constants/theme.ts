@@ -31,7 +31,22 @@ export const Colors = {
  * Editorial redesign palette, ported from the "Vestro Redesign" Claude Design mock
  * (oklch values converted to sRGB hex).
  */
-export const VestroColors = {
+// Clothing category swatch colors — a physical fabric color reads the same
+// regardless of the app's theme, so this stays a single shared table rather
+// than being duplicated per palette.
+const tints: Record<string, string> = {
+  Hauts: '#D6E2D6',
+  Bas: '#E2DED5',
+  Chaussures: '#D9D4C9',
+  Accessoires: '#F3D7CB',
+  Robes: '#E5D3DE',
+  Montres: '#D3D9E0',
+  Bijoux: '#EDE0C8',
+  Sacs: '#D7C9BB',
+  'Couvre-chefs': '#DCD6E8',
+};
+
+export const VestroColorsLight = {
   background: '#F9F5EB',
   ink: '#1E1A13',
   muted: '#686357',
@@ -40,15 +55,44 @@ export const VestroColors = {
   accent: '#906754',
   frame: '#3F4A38',
   buttonText: '#FBF8F1',
-  tints: {
-    Hauts: '#D6E2D6',
-    Bas: '#E2DED5',
-    Chaussures: '#D9D4C9',
-    Accessoires: '#F3D7CB',
-  } as Record<string, string>,
+  tints,
 };
 
-export const VestroCategories = ['Hauts', 'Bas', 'Chaussures', 'Accessoires'] as const;
+// Night theme: the same editorial palette inverted, so "ink" stays the
+// high-contrast text/button-fill color and "buttonText" stays its
+// counter-color — every screen that fills a button with `ink` and labels it
+// with `buttonText` gets a correct-looking dark-mode button for free.
+export const VestroColorsDark = {
+  background: '#15120D',
+  ink: '#F3ECDD',
+  muted: '#9C9382',
+  border: '#39332A',
+  surface: '#1F1B14',
+  accent: '#C9A47E',
+  frame: '#4A5940',
+  buttonText: '#1E1A13',
+  tints,
+};
+
+export type AppColors = typeof VestroColorsLight;
+
+// Fixed (non-reactive) palette for the outfit "board": it always renders as a
+// literal white surface — see components/outfit-canvas.tsx — because
+// clothing cutouts are photographed on pure white (utils/remove-background.ts)
+// and need to sit on it without a color mismatch, in night mode too.
+export const VestroColors: AppColors = VestroColorsLight;
+
+export const VestroCategories = [
+  'Hauts',
+  'Bas',
+  'Chaussures',
+  'Accessoires',
+  'Robes',
+  'Montres',
+  'Bijoux',
+  'Sacs',
+  'Couvre-chefs',
+] as const;
 
 export const VestroPalette: { label: string; hex: string }[] = [
   { label: 'Blanc', hex: '#FFFFFF' },

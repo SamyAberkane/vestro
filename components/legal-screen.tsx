@@ -1,9 +1,11 @@
 import { router } from 'expo-router';
 import type { ReactNode } from 'react';
+import { useMemo } from 'react';
 import { ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
-import { VestroColors, VestroFonts } from '@/constants/theme';
+import { AppColors, VestroFonts } from '@/constants/theme';
+import { useAppTheme } from '@/theme/context';
 
 type LegalScreenProps = {
   title: string;
@@ -12,6 +14,8 @@ type LegalScreenProps = {
 
 export function LegalScreen({ title, children }: LegalScreenProps) {
   const insets = useSafeAreaInsets();
+  const { colors: VestroColors } = useAppTheme();
+  const styles = useMemo(() => createStyles(VestroColors), [VestroColors]);
 
   return (
     <View style={styles.screen}>
@@ -32,14 +36,18 @@ export function LegalScreen({ title, children }: LegalScreenProps) {
 }
 
 export function LegalHeading({ children }: { children: ReactNode }) {
+  const { colors: VestroColors } = useAppTheme();
+  const styles = useMemo(() => createStyles(VestroColors), [VestroColors]);
   return <Text style={styles.heading}>{children}</Text>;
 }
 
 export function LegalParagraph({ children }: { children: ReactNode }) {
+  const { colors: VestroColors } = useAppTheme();
+  const styles = useMemo(() => createStyles(VestroColors), [VestroColors]);
   return <Text style={styles.paragraph}>{children}</Text>;
 }
 
-const styles = StyleSheet.create({
+const createStyles = (VestroColors: AppColors) => StyleSheet.create({
   screen: {
     flex: 1,
     backgroundColor: VestroColors.background,

@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import {
   Alert,
   Image,
@@ -13,8 +13,9 @@ import {
   View,
 } from 'react-native';
 
-import { VestroColors, VestroFonts } from '@/constants/theme';
+import { AppColors, VestroFonts } from '@/constants/theme';
 import { useI18n } from '@/i18n/context';
+import { useAppTheme } from '@/theme/context';
 
 export type ClothingOptionsItem = {
   id: number;
@@ -37,6 +38,7 @@ type ClothingOptionsSheetProps = {
   onChangeAvailability: (available: boolean, reason?: string) => void;
   onRequestColorChange: () => void;
   onRequestPhotoChange: () => void;
+  onRequestCrop: () => void;
   moveAction: { label: string; onPress: () => void };
   onDelete: () => void;
 };
@@ -55,10 +57,13 @@ export function ClothingOptionsSheet({
   onChangeAvailability,
   onRequestColorChange,
   onRequestPhotoChange,
+  onRequestCrop,
   moveAction,
   onDelete,
 }: ClothingOptionsSheetProps) {
   const { t, tCategory } = useI18n();
+  const { colors: VestroColors } = useAppTheme();
+  const styles = useMemo(() => createStyles(VestroColors), [VestroColors]);
   const [nameDraft, setNameDraft] = useState('');
   const [priceDraft, setPriceDraft] = useState('');
   const [reasonDraft, setReasonDraft] = useState('');
@@ -237,6 +242,13 @@ export function ClothingOptionsSheet({
               <Text style={styles.actionChevron}>›</Text>
             </TouchableOpacity>
 
+            {item.image && (
+              <TouchableOpacity style={styles.actionRow} onPress={onRequestCrop}>
+                <Text style={styles.actionLabel}>{t('options.cropPhoto')}</Text>
+                <Text style={styles.actionChevron}>›</Text>
+              </TouchableOpacity>
+            )}
+
             <TouchableOpacity
               style={styles.actionRow}
               onPress={() => {
@@ -260,7 +272,7 @@ export function ClothingOptionsSheet({
 
 const THUMB_SIZE = 56;
 
-const styles = StyleSheet.create({
+const createStyles = (VestroColors: AppColors) => StyleSheet.create({
   backdrop: {
     flex: 1,
     backgroundColor: 'rgba(30,26,19,0.45)',
@@ -307,7 +319,7 @@ const styles = StyleSheet.create({
     marginLeft: 14,
   },
   nameInput: {
-    fontFamily: VestroFonts.serifSemiBoldItalic,
+    fontFamily: VestroFonts.serifSemiBold,
     fontSize: 19,
     color: VestroColors.ink,
     padding: 0,

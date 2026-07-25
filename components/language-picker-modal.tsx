@@ -1,8 +1,10 @@
+import { useMemo } from 'react';
 import { Modal, Pressable, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 
-import { VestroColors, VestroFonts } from '@/constants/theme';
+import { AppColors, VestroFonts } from '@/constants/theme';
 import { useI18n } from '@/i18n/context';
 import { LANGUAGES } from '@/i18n/translations';
+import { useAppTheme } from '@/theme/context';
 
 type LanguagePickerModalProps = {
   visible: boolean;
@@ -11,6 +13,8 @@ type LanguagePickerModalProps = {
 
 export function LanguagePickerModal({ visible, onClose }: LanguagePickerModalProps) {
   const { language, setLanguage, t } = useI18n();
+  const { colors: VestroColors } = useAppTheme();
+  const styles = useMemo(() => createStyles(VestroColors), [VestroColors]);
 
   return (
     <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
@@ -43,7 +47,7 @@ export function LanguagePickerModal({ visible, onClose }: LanguagePickerModalPro
   );
 }
 
-const styles = StyleSheet.create({
+const createStyles = (VestroColors: AppColors) => StyleSheet.create({
   backdrop: {
     flex: 1,
     backgroundColor: 'rgba(30,26,19,0.45)',

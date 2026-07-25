@@ -1,7 +1,9 @@
+import { useMemo } from 'react';
 import { Modal, Pressable, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 
-import { VestroColors, VestroFonts, VestroPalette } from '@/constants/theme';
+import { AppColors, VestroFonts, VestroPalette } from '@/constants/theme';
 import { useI18n } from '@/i18n/context';
+import { useAppTheme } from '@/theme/context';
 
 type ColorPickerModalProps = {
   visible: boolean;
@@ -17,6 +19,8 @@ export function ColorPickerModal({
   onCancel,
 }: ColorPickerModalProps) {
   const { t, tColor } = useI18n();
+  const { colors: VestroColors } = useAppTheme();
+  const styles = useMemo(() => createStyles(VestroColors), [VestroColors]);
 
   return (
     <Modal visible={visible} transparent animationType="fade" onRequestClose={onCancel}>
@@ -55,7 +59,7 @@ export function ColorPickerModal({
 
 const SWATCH_SIZE = 52;
 
-const styles = StyleSheet.create({
+const createStyles = (VestroColors: AppColors) => StyleSheet.create({
   backdrop: {
     flex: 1,
     backgroundColor: 'rgba(30,26,19,0.45)',

@@ -1,6 +1,6 @@
 import * as ImagePicker from 'expo-image-picker';
 import { useFocusEffect } from 'expo-router';
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useMemo, useRef, useState } from 'react';
 import {
   Alert,
   Image,
@@ -13,8 +13,10 @@ import {
 
 import { ClothingOptionsSheet } from '@/components/clothing-options-sheet';
 import { ColorPickerModal } from '@/components/color-picker-modal';
+import { CropModal } from '@/components/crop-modal';
+import { ItemReveal } from '@/components/item-reveal';
 import { ProcessingOverlay } from '@/components/processing-overlay';
-import { VestroCategories, VestroColors, VestroFonts } from '@/constants/theme';
+import { AppColors, VestroCategories, VestroFonts } from '@/constants/theme';
 import { useI18n } from '@/i18n/context';
 import {
   deleteClothingItem,
@@ -22,11 +24,15 @@ import {
   insertClothingItems,
   updateClothingItem,
 } from '@/lib/clothing';
+import { showPhotoTips } from '@/lib/photo-tips';
+import { useAppTheme } from '@/theme/context';
 import type { ClothingItem } from '@/types/clothing';
-import { analyzeClothingPhoto, removeBackground } from '@/utils/remove-background';
+import { analyzeClothingPhoto, removeBackground, type PhotoIssue } from '@/utils/remove-background';
 
 export default function WishlistScreen() {
   const { t, tCategory, language } = useI18n();
+  const { colors: VestroColors } = useAppTheme();
+  const styles = useMemo(() => createStyles(VestroColors), [VestroColors]);
   const [clothes, setClothes] = useState<ClothingItem[]>([]);
   const [isLoaded, setIsLoaded] = useState(false);
   const [processingImageUri, setProcessingImageUri] = useState<string | undefined>(undefined);
@@ -38,6 +44,18 @@ export default function WishlistScreen() {
   const colorDismissRef = useRef<(() => void) | null>(null);
   const [optionsItemId, setOptionsItemId] = useState<number | null>(null);
   const optionsItem = clothes.find((clothing) => clothing.id === optionsItemId) ?? null;
+  const [cropTarget, setCropTarget] = useState<{ id: number; image: string } | null>(null);
+  const [revealItems, setRevealItems] = useState<ClothingItem[]>([]);
+
+  function requestCrop() {
+    if (!optionsItem?.image) return;
+    const target = { id: optionsItem.id, image: optionsItem.image };
+    // Two RN <Modal>s open at once is flaky (the second one can silently fail
+    // to present, especially on Android) — close the options sheet first and
+    // let its dismiss animation finish before presenting the crop modal.
+    setOptionsItemId(null);
+    setTimeout(() => setCropTarget(target), 300);
+  }
 
   function openColorPicker(
     onPick: (color: string | undefined) => void,
@@ -100,6 +118,8 @@ export default function WishlistScreen() {
   }
 
   async function addWishlistItem() {
+    await showPhotoTips(t);
+
     const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
 
     if (!permission.granted) {
@@ -133,12 +153,18 @@ export default function WishlistScreen() {
     }
 
     const newItems = [];
+    const rejected: { index: number; issue: PhotoIssue }[] = [];
 
     for (let i = 0; i < assets.length; i++) {
       setBatchStep({ index: i + 1, count: assets.length });
       setProcessingImageUri(assets[i].uri);
 
       const analysis = await analyzeClothingPhoto(assets[i].uri, language);
+
+      if (analysis.usable === false) {
+        rejected.push({ index: i + 1, issue: analysis.issue ?? 'other' });
+        continue;
+      }
 
       newItems.push({
         name: analysis.name ?? t('wishlist.fallbackName', { index: i + 1 }),
@@ -152,9 +178,21 @@ export default function WishlistScreen() {
 
     setProcessingImageUri(undefined);
 
+    if (rejected.length > 0) {
+      const lines = rejected.map((r) =>
+        assets.length > 1
+          ? `${t('processing.stepLabel', { index: r.index, count: assets.length })} — ${t(`photoIssue.${r.issue}`)}`
+          : t(`photoIssue.${r.issue}`)
+      );
+      Alert.alert(t('photoIssue.alertTitle'), lines.join('\n'));
+    }
+
+    if (newItems.length === 0) return;
+
     try {
       const inserted = await insertClothingItems(newItems);
       setClothes((currentClothes) => [...inserted, ...currentClothes]);
+      setRevealItems(inserted);
     } catch (error) {
       Alert.alert(t('common.errorTitle'), String(error instanceof Error ? error.message : error));
     }
@@ -278,6 +316,12 @@ export default function WishlistScreen() {
         stepCount={batchStep.count}
       />
 
+      <ItemReveal
+        items={revealItems}
+        visible={revealItems.length > 0}
+        onDone={() => setRevealItems([])}
+      />
+
       <ColorPickerModal
         visible={colorPickerVisible}
         onSelect={handleColorSelect}
@@ -304,6 +348,7 @@ export default function WishlistScreen() {
           openColorPicker((color) => updateItem(targetId, { color }));
         }}
         onRequestPhotoChange={handleOptionsPhotoChange}
+        onRequestCrop={requestCrop}
         moveAction={{
           label: t('wishlist.moveToDressing'),
           onPress: () => optionsItem && updateItem(optionsItem.id, { status: 'owned' }),
@@ -318,11 +363,21 @@ export default function WishlistScreen() {
           );
         }}
       />
+
+      <CropModal
+        visible={cropTarget !== null}
+        imageUri={cropTarget?.image}
+        onCancel={() => setCropTarget(null)}
+        onConfirm={(croppedDataUri) => {
+          if (cropTarget) updateItem(cropTarget.id, { imageDataUri: croppedDataUri });
+          setCropTarget(null);
+        }}
+      />
     </View>
   );
 }
 
-const styles = StyleSheet.create({
+const createStyles = (VestroColors: AppColors) => StyleSheet.create({
   screen: {
     flex: 1,
     backgroundColor: VestroColors.background,
@@ -447,7 +502,7 @@ const styles = StyleSheet.create({
   },
   itemName: {
     marginTop: 9,
-    fontFamily: VestroFonts.serifMediumItalic,
+    fontFamily: VestroFonts.serifMedium,
     fontSize: 14,
     color: VestroColors.ink,
   },

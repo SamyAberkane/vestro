@@ -1,12 +1,13 @@
 import * as Location from 'expo-location';
 import { router, useFocusEffect } from 'expo-router';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   Alert,
   Image,
   LayoutChangeEvent,
   ScrollView,
   StyleSheet,
+  Switch,
   Text,
   TouchableOpacity,
   View,
@@ -14,12 +15,13 @@ import {
 
 import { LanguagePickerModal } from '@/components/language-picker-modal';
 import { CanvasLayout, OutfitCanvas } from '@/components/outfit-canvas';
-import { VestroCategories, VestroColors, VestroFonts } from '@/constants/theme';
+import { AppColors, VestroCategories, VestroFonts } from '@/constants/theme';
 import { useI18n } from '@/i18n/context';
 import { LANGUAGES, MONTHS } from '@/i18n/translations';
 import { fetchActiveLook, saveActiveLook } from '@/lib/active-look';
 import { fetchClothingItems } from '@/lib/clothing';
 import { insertOutfit } from '@/lib/outfits';
+import { useAppTheme } from '@/theme/context';
 import type { ActiveLook, ClothingItem } from '@/types/clothing';
 import { CurrentWeather, fetchCurrentWeather } from '@/utils/weather';
 
@@ -31,12 +33,15 @@ function dayOfYear(date: Date) {
 
 export default function HomeScreen() {
   const { t, tCategory, language } = useI18n();
+  const { scheme, colors: VestroColors, setScheme } = useAppTheme();
+  const styles = useMemo(() => createStyles(VestroColors), [VestroColors]);
   const [clothes, setClothes] = useState<ClothingItem[]>([]);
   const [isLoaded, setIsLoaded] = useState(false);
   const [selected, setSelected] = useState<Record<string, number[]>>({});
   const [layout, setLayout] = useState<Record<number, CanvasLayout>>({});
   const [activeCategory, setActiveCategory] = useState('Hauts');
   const [canvasHeight, setCanvasHeight] = useState(0);
+  const [showPrice, setShowPrice] = useState(false);
   const [weather, setWeather] = useState<CurrentWeather | null>(null);
   const [languagePickerVisible, setLanguagePickerVisible] = useState(false);
 
@@ -176,7 +181,7 @@ export default function HomeScreen() {
         if (!name?.trim()) return;
 
         try {
-          await insertOutfit({ name: name.trim(), ...currentLookPayload() });
+          await insertOutfit({ name: name.trim(), ...currentLookPayload(), showPrice });
           Alert.alert(t('home.savedTitle'), t('home.savedMessage'));
         } catch (error) {
           Alert.alert(t('common.errorTitle'), String(error instanceof Error ? error.message : error));
@@ -194,11 +199,21 @@ export default function HomeScreen() {
         <Text style={styles.logo}>Vestro</Text>
 
         <View style={styles.issueBlock}>
-          <TouchableOpacity onPress={() => setLanguagePickerVisible(true)}>
-            <Text style={styles.languageFlag}>
-              {LANGUAGES.find((option) => option.code === language)?.flag}
-            </Text>
-          </TouchableOpacity>
+          <View style={styles.topBarIcons}>
+            <TouchableOpacity onPress={() => setLanguagePickerVisible(true)}>
+              <Text style={styles.languageFlag}>
+                {LANGUAGES.find((option) => option.code === language)?.flag}
+              </Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              onPress={() => setScheme(scheme === 'dark' ? 'light' : 'dark')}
+              hitSlop={8}
+              accessibilityRole="button"
+              accessibilityLabel={t('account.darkMode')}
+            >
+              <Text style={styles.languageFlag}>{scheme === 'dark' ? '☀️' : '🌙'}</Text>
+            </TouchableOpacity>
+          </View>
           <Text style={styles.issueText}>
             N° {dayOfYear(today).toString().padStart(3, '0')}
           </Text>
@@ -226,8 +241,20 @@ export default function HomeScreen() {
             layout={layout}
             onLayoutChange={handleLayoutChange}
             height={canvasHeight}
+            showPrice={showPrice}
           />
         )}
+      </View>
+
+      <View style={styles.priceToggleRow}>
+        <Text style={styles.priceToggleLabel}>{t('createOutfit.showPrice')}</Text>
+        <Switch
+          value={showPrice}
+          onValueChange={setShowPrice}
+          trackColor={{ false: VestroColors.border, true: VestroColors.ink }}
+          thumbColor={VestroColors.buttonText}
+          ios_backgroundColor={VestroColors.border}
+        />
       </View>
 
       <ScrollView
@@ -311,7 +338,7 @@ export default function HomeScreen() {
   );
 }
 
-const styles = StyleSheet.create({
+const createStyles = (VestroColors: AppColors) => StyleSheet.create({
   screen: {
     flex: 1,
     backgroundColor: VestroColors.background,
@@ -332,6 +359,10 @@ const styles = StyleSheet.create({
   },
   issueBlock: {
     alignItems: 'flex-end',
+  },
+  topBarIcons: {
+    flexDirection: 'row',
+    gap: 10,
   },
   languageFlag: {
     fontSize: 18,
@@ -378,6 +409,17 @@ const styles = StyleSheet.create({
   canvasArea: {
     flex: 1,
     marginTop: 16,
+  },
+  priceToggleRow: {
+    marginTop: 10,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  priceToggleLabel: {
+    fontFamily: VestroFonts.sansMedium,
+    fontSize: 13,
+    color: VestroColors.ink,
   },
   categoryTabsScroll: {
     flexGrow: 0,
@@ -472,3 +514,4 @@ const styles = StyleSheet.create({
     textDecorationLine: 'underline',
   },
 });
+

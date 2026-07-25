@@ -4,73 +4,33 @@ import * as UPNG from 'upng-js';
 
 import { VestroCategories, VestroPalette } from '@/constants/theme';
 import { Language } from '@/i18n/translations';
-
-const API_KEY = process.env.EXPO_PUBLIC_GEMINI_API_KEY;
-const GEMINI_MODEL = 'gemini-3.1-flash-lite-image';
-const GEMINI_ENDPOINT = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`;
-
-const TIMEOUT_MS = 45000;
-const MAX_RETRIES_ON_RATE_LIMIT = 1;
-const DEFAULT_RETRY_DELAY_MS = 15000;
+import { supabase } from '@/lib/supabase';
 
 // Clothing photos are never displayed above ~340px in the app; shrinking
-// before upload cuts network time and the tokens Gemini has to process.
+// before upload cuts network time and the payload sent to the edit function.
 const MAX_UPLOAD_WIDTH = 1024;
 
-// Matches styles.canvas.backgroundColor in components/outfit-canvas.tsx —
-// the square where items get placed when building an outfit.
-const BACKGROUND_HEX = '#FFFFFF';
-const BACKGROUND_RGB = 'RGB(255,255,255)';
+// Reasons a source photo can't produce a clean isolated sticker — surfaced to
+// the user (via i18n `photoIssue.<code>`) so a rejected photo comes with a
+// concrete "try again because X" instead of a silent bad result. Mirrors the
+// same list in supabase/functions/edit-clothing-photo/index.ts.
+export const PHOTO_ISSUE_CODES = [
+  'multiple_items',
+  'cropped',
+  'too_dark_or_blurry',
+  'no_item_detected',
+  'other',
+] as const;
 
-const REDRAW_INSTRUCTION =
-  'This image shows a single clothing item or accessory, possibly photographed in a ' +
-  'messy or cluttered environment. Redraw the item exactly as-is — same shape, colors, ' +
-  'textures, proportions, framing and orientation — but place it centered on a background ' +
-  `that is a completely flat, solid fill of pure white, hex code ${BACKGROUND_HEX}, ` +
-  `${BACKGROUND_RGB}, exactly like a blank white canvas or a color swatch. Absolutely no ` +
-  'gradient, no vignette, no shadow, no light falloff, no off-white or gray tint anywhere in ' +
-  'the background — every single background pixel must be pure white. Do not add, remove, ' +
-  'crop, or alter any part of the item itself.';
-
-const PROMPT = REDRAW_INSTRUCTION;
-
-const CATEGORY_OPTIONS = VestroCategories.join(', ');
-const COLOR_OPTIONS = VestroPalette.map((swatch) => swatch.label).join(', ');
-
-// The name Gemini invents should match whatever language the user has the app
-// set to (constants/theme.ts categories/colors stay French internally either
-// way — see i18n/context.tsx tCategory/tColor — only this free-text "name"
-// field is actually generated in a specific language).
-const METADATA_NAME_LANGUAGE: Record<Language, string> = {
-  fr: 'French',
-  en: 'English',
-  es: 'Spanish',
-  it: 'Italian',
-};
-
-const METADATA_NAME_EXAMPLE: Record<Language, string> = {
-  fr: '"Chemise blanche", "Jean droit bleu"',
-  en: '"White shirt", "Straight blue jeans"',
-  es: '"Camisa blanca", "Vaqueros rectos azules"',
-  it: '"Camicia bianca", "Jeans dritti blu"',
-};
-
-function buildPromptWithMetadata(language: Language): string {
-  return (
-    `${REDRAW_INSTRUCTION} Before the image, output exactly one line of raw JSON — no ` +
-    'markdown code fences, no commentary before or after — describing the item, in this ' +
-    'exact shape: {"name": string, "category": string, "color": string}. "name" is a short ' +
-    `natural product name in ${METADATA_NAME_LANGUAGE[language]} (2-4 words, e.g. ` +
-    `${METADATA_NAME_EXAMPLE[language]}). ` +
-    `"category" must be exactly one of: ${CATEGORY_OPTIONS}. "color" must be exactly one of: ` +
-    `${COLOR_OPTIONS} — pick the single closest match to the item's dominant color.`
-  );
-}
+export type PhotoIssue = (typeof PHOTO_ISSUE_CODES)[number];
 
 type ClothingMetadata = {
   name?: string;
   category?: string;
   color?: string;
+  /** Defaults to true (fail open) whenever the model doesn't explicitly say otherwise. */
+  usable?: boolean;
+  issue?: PhotoIssue;
 };
 
 function parseClothingMetadata(text: string | undefined, tag: string): ClothingMetadata {
@@ -91,11 +51,17 @@ function parseClothingMetadata(text: string | undefined, tag: string): ClothingM
       (swatch) => swatch.label.toLowerCase() === String(parsed.color ?? '').toLowerCase()
     );
     const name = typeof parsed.name === 'string' ? parsed.name.trim() : undefined;
+    const usable = parsed.usable !== false;
+    const issue = usable
+      ? undefined
+      : PHOTO_ISSUE_CODES.find((code) => code === parsed.issue) ?? 'other';
 
     return {
       name: name || undefined,
       category,
       color: colorSwatch?.hex,
+      usable,
+      issue,
     };
   } catch (error) {
     console.warn(`${tag} JSON invalide dans la réponse texte: "${match[0].slice(0, 200)}"`, error);
@@ -137,15 +103,6 @@ export function splitDataUri(dataUri: string): { mimeType: string; base64: strin
     throw new Error('Format de data URI non reconnu (attendu "data:<mime>;base64,...")');
   }
   return { mimeType: match[1], base64: match[2] };
-}
-
-function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-function parseRetryDelayMs(message: string): number {
-  const match = message.match(/retry in ([\d.]+)s/i);
-  return match ? Math.ceil(parseFloat(match[1]) * 1000) : DEFAULT_RETRY_DELAY_MS;
 }
 
 // Gemini never returns a pixel-perfect #FFFFFF background — it's always off by a
@@ -249,125 +206,70 @@ async function makeBackgroundTransparent(pngDataUri: string, tag: string): Promi
   }
 }
 
+type EditClothingPhotoResponse =
+  | { status: 'success'; image: { mimeType: string; base64: string }; text?: string; message: string }
+  | { status: 'error'; message: string };
+
 type GeminiImageEditOutcome = {
   image: string;
   text?: string;
-  status: 'skipped-no-api-key' | 'success' | 'error';
+  status: 'success' | 'error';
   message: string;
 };
 
 /**
- * Sends a photo to Gemini 2.5 Flash Image ("Nano Banana") with the given
- * prompt and returns whatever image + text parts it responds with. Retries
- * once on HTTP 429 (the free tier has a very low requests-per-minute limit
- * for image generation) before giving up. Returns a diagnostic outcome
- * instead of failing silently so callers can log/report exactly what
- * happened.
+ * Sends a photo to the `edit-clothing-photo` Supabase Edge Function, which
+ * holds the real Gemini ("Nano Banana") API key server-side and forwards the
+ * given mode/language to build the right prompt — the client never sees or
+ * ships that key. Returns a diagnostic outcome instead of failing silently so
+ * callers can log/report exactly what happened.
  */
-async function callGeminiImageEdit(
+async function callEditClothingPhoto(
   sourceDataUri: string,
-  prompt: string,
+  mode: 'sticker' | 'metadata',
+  language: Language | undefined,
   tag: string
 ): Promise<GeminiImageEditOutcome> {
-  if (!API_KEY) {
-    const message = 'EXPO_PUBLIC_GEMINI_API_KEY non défini — Nano Banana non appelé';
-    console.warn(`${tag} ${message}`);
-    return { image: sourceDataUri, status: 'skipped-no-api-key', message };
-  }
-
   const { mimeType, base64 } = splitDataUri(sourceDataUri);
   console.log(`${tag} image source: type=${mimeType}, ~${Math.round((base64.length * 3) / 4)} octets`);
 
-  for (let attempt = 0; attempt <= MAX_RETRIES_ON_RATE_LIMIT; attempt++) {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), TIMEOUT_MS);
+  try {
+    console.log(`${tag} envoi à edit-clothing-photo (mode=${mode})…`);
 
-    try {
-      console.log(`${tag} envoi à Gemini (${GEMINI_MODEL}), tentative ${attempt + 1}/${MAX_RETRIES_ON_RATE_LIMIT + 1}…`);
+    const { data, error } = await supabase.functions.invoke<EditClothingPhotoResponse>(
+      'edit-clothing-photo',
+      { body: { mode, language, mimeType, base64 } }
+    );
 
-      const response = await fetch(`${GEMINI_ENDPOINT}?key=${API_KEY}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          contents: [
-            {
-              parts: [
-                { text: prompt },
-                { inline_data: { mime_type: mimeType, data: base64 } },
-              ],
-            },
-          ],
-          generationConfig: { responseModalities: ['TEXT', 'IMAGE'] },
-        }),
-        signal: controller.signal,
-      });
+    if (error) throw error;
+    if (!data) throw new Error('Réponse vide de edit-clothing-photo');
+    if (data.status !== 'success') throw new Error(data.message);
 
-      const json = await response.json();
-      console.log(`${tag} réponse: HTTP ${response.status} ${response.statusText}`);
+    const resultBytes = Math.round((data.image.base64.length * 3) / 4);
+    console.log(`${tag} image reçue: type=${data.image.mimeType}, ~${resultBytes} octets`);
 
-      if (response.status === 429 && attempt < MAX_RETRIES_ON_RATE_LIMIT) {
-        const errorMessage = json?.error?.message ?? '';
-        const retryDelayMs = parseRetryDelayMs(errorMessage);
-        console.warn(`${tag} 429 quota atteint — nouvelle tentative dans ${retryDelayMs}ms`);
-        await delay(retryDelayMs);
-        continue;
-      }
+    const rawImage = `data:${data.image.mimeType};base64,${data.image.base64}`;
+    const image = await makeBackgroundTransparent(rawImage, tag);
 
-      if (!response.ok) {
-        const detail = json?.error?.message ?? JSON.stringify(json).slice(0, 300);
-        throw new Error(`HTTP ${response.status} — ${detail}`);
-      }
-
-      const parts = json?.candidates?.[0]?.content?.parts ?? [];
-      const imagePart = parts.find((part: any) => part.inlineData || part.inline_data);
-      const inline = imagePart?.inlineData ?? imagePart?.inline_data;
-      const textPart = parts.find((part: any) => typeof part.text === 'string')?.text;
-
-      if (!inline?.data) {
-        throw new Error(
-          `Réponse Gemini sans image${textPart ? ` — texte reçu: "${textPart.slice(0, 200)}"` : ''} : ${JSON.stringify(json).slice(0, 300)}`
-        );
-      }
-
-      const resultMimeType = inline.mimeType ?? inline.mime_type ?? 'image/png';
-      const resultBytes = Math.round((inline.data.length * 3) / 4);
-      console.log(`${tag} image reçue: type=${resultMimeType}, ~${resultBytes} octets`);
-
-      const rawImage = `data:${resultMimeType};base64,${inline.data}`;
-      const image = await makeBackgroundTransparent(rawImage, tag);
-
-      return {
-        image,
-        text: textPart,
-        status: 'success',
-        message: `OK — ~${resultBytes} octets reçus`,
-      };
-    } catch (error) {
-      const message = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
-      console.warn(`${tag} ÉCHEC: ${message}`, error);
-      return { image: sourceDataUri, status: 'error', message };
-    } finally {
-      clearTimeout(timeout);
-    }
+    return { image, text: data.text, status: 'success', message: `OK — ~${resultBytes} octets reçus` };
+  } catch (error) {
+    const message = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
+    console.warn(`${tag} ÉCHEC: ${message}`, error);
+    return { image: sourceDataUri, status: 'error', message };
   }
-
-  return { image: sourceDataUri, status: 'error', message: 'Échec après nouvelle tentative sur limite de débit' };
 }
 
 /**
  * Converts a freshly-picked photo into a "Vestro friendly" sticker: same
  * clothing item, background cut to full transparency. Falls back to the
- * original photo if Nano Banana isn't configured or the request fails, so
- * adding clothes still works without the API.
+ * original photo if the edit function fails, so adding clothes still works.
  */
 export async function removeBackground(imageUri: string): Promise<string> {
   const tag = '[removeBackground]';
 
-  if (!API_KEY) return imageUri;
-
   const uploadUri = imageUri.startsWith('data:') ? imageUri : await resizeForUpload(imageUri, tag);
   const sourceDataUri = uploadUri.startsWith('data:') ? uploadUri : await uriToDataUri(uploadUri);
-  const outcome = await callGeminiImageEdit(sourceDataUri, PROMPT, tag);
+  const outcome = await callEditClothingPhoto(sourceDataUri, 'sticker', undefined, tag);
   return outcome.image;
 }
 
@@ -376,13 +278,16 @@ export type ClothingAnalysis = {
   name?: string;
   category?: string;
   color?: string;
+  /** false only when the model flagged the source photo as unusable — see `issue`. */
+  usable?: boolean;
+  issue?: PhotoIssue;
 };
 
 /**
- * Same "sticker" cutout as removeBackground, but in one Gemini call also asks
- * for a short name, category and palette color guessed from the photo — used
- * when bulk-adding clothes so the user doesn't have to fill those in by hand.
- * Any field the model doesn't confidently return is just left undefined.
+ * Same "sticker" cutout as removeBackground, but in one call also asks for a
+ * short name, category and palette color guessed from the photo — used when
+ * bulk-adding clothes so the user doesn't have to fill those in by hand. Any
+ * field the model doesn't confidently return is just left undefined.
  */
 export async function analyzeClothingPhoto(
   imageUri: string,
@@ -390,11 +295,9 @@ export async function analyzeClothingPhoto(
 ): Promise<ClothingAnalysis> {
   const tag = '[analyzeClothingPhoto]';
 
-  if (!API_KEY) return { image: imageUri };
-
   const uploadUri = imageUri.startsWith('data:') ? imageUri : await resizeForUpload(imageUri, tag);
   const sourceDataUri = uploadUri.startsWith('data:') ? uploadUri : await uriToDataUri(uploadUri);
-  const outcome = await callGeminiImageEdit(sourceDataUri, buildPromptWithMetadata(language), tag);
+  const outcome = await callEditClothingPhoto(sourceDataUri, 'metadata', language, tag);
 
   if (outcome.status !== 'success') return { image: outcome.image };
 

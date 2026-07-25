@@ -18,7 +18,7 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
-import { VestroColors, VestroFonts } from '@/constants/theme';
+import { AppColors, VestroFonts } from '@/constants/theme';
 import { useI18n } from '@/i18n/context';
 import {
   getIsPremium,
@@ -27,12 +27,19 @@ import {
   restorePurchases,
   setSimulatedPremium,
 } from '@/lib/premium';
+import { useAppTheme } from '@/theme/context';
 
 type PaywallModalProps = {
   visible: boolean;
   onClose: () => void;
   /** Fires whenever the premium entitlement changes, so the entry point badge can reflect it. */
   onPremiumChange?: (active: boolean) => void;
+  /** False when used as the app-wide access gate: no × button, no "maybe later"
+   * link, hardware back/swipe-to-dismiss disabled — subscribing is the only
+   * way through. `onSignOut`, if given, is offered instead so the user isn't
+   * fully trapped. Defaults to true (the dismissible "manage subscription" view). */
+  dismissible?: boolean;
+  onSignOut?: () => void;
 };
 
 const MANAGE_SUBSCRIPTIONS_URL = 'https://apps.apple.com/account/subscriptions';
@@ -62,6 +69,8 @@ function useCarouselFeatures(): { icon: FeatureIcon; title: string; desc: string
 
 function FeatureCarousel() {
   const features = useCarouselFeatures();
+  const { colors: VestroColors } = useAppTheme();
+  const styles = useMemo(() => createStyles(VestroColors), [VestroColors]);
   const listRef = useRef<FlatList>(null);
   const indexRef = useRef(0);
   const [activeIndex, setActiveIndex] = useState(0);
@@ -119,12 +128,16 @@ function FeatureCarousel() {
   );
 }
 
-function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-export function PaywallModal({ visible, onClose, onPremiumChange }: PaywallModalProps) {
+export function PaywallModal({
+  visible,
+  onClose,
+  onPremiumChange,
+  dismissible = true,
+  onSignOut,
+}: PaywallModalProps) {
   const { t } = useI18n();
+  const { colors: VestroColors } = useAppTheme();
+  const styles = useMemo(() => createStyles(VestroColors), [VestroColors]);
   const [isPremium, setIsPremium] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
   const [isRestoring, setIsRestoring] = useState(false);
@@ -137,10 +150,9 @@ export function PaywallModal({ visible, onClose, onPremiumChange }: PaywallModal
     setIsProcessing(true);
 
     try {
+      // Resolves only once lib/premium.ts has verified the transaction with
+      // Apple's server and written the entitlement — no arbitrary delay needed.
       await purchaseMonthly();
-      // On real StoreKit the purchaseUpdatedListener (lib/premium.ts) finishes
-      // the transaction asynchronously — give it a beat before re-reading.
-      if (isRealIAPAvailable) await delay(500);
 
       const active = await getIsPremium();
       setIsPremium(active);
@@ -199,16 +211,22 @@ export function PaywallModal({ visible, onClose, onPremiumChange }: PaywallModal
   const insets = useSafeAreaInsets();
 
   return (
-    <Modal visible={visible} animationType="slide" onRequestClose={onClose}>
+    <Modal
+      visible={visible}
+      animationType="slide"
+      onRequestClose={dismissible ? onClose : () => {}}
+    >
       <View style={styles.screen}>
         <ScrollView contentContainerStyle={styles.content}>
-          <TouchableOpacity
-            style={[styles.closeButton, { top: insets.top + 12 }]}
-            onPress={onClose}
-            hitSlop={10}
-          >
-            <Text style={styles.closeGlyph}>×</Text>
-          </TouchableOpacity>
+          {dismissible && (
+            <TouchableOpacity
+              style={[styles.closeButton, { top: insets.top + 12 }]}
+              onPress={onClose}
+              hitSlop={10}
+            >
+              <Text style={styles.closeGlyph}>×</Text>
+            </TouchableOpacity>
+          )}
 
           <Text style={styles.badge}>✨</Text>
           <Text style={styles.title}>{isPremium ? t('premium.activeTitle') : t('premium.title')}</Text>
@@ -264,16 +282,24 @@ export function PaywallModal({ visible, onClose, onPremiumChange }: PaywallModal
             </TouchableOpacity>
           </View>
 
-          <TouchableOpacity style={styles.dismissLink} onPress={onClose}>
-            <Text style={styles.dismissText}>{t('premium.dismiss')}</Text>
-          </TouchableOpacity>
+          {dismissible ? (
+            <TouchableOpacity style={styles.dismissLink} onPress={onClose}>
+              <Text style={styles.dismissText}>{t('premium.dismiss')}</Text>
+            </TouchableOpacity>
+          ) : (
+            onSignOut && (
+              <TouchableOpacity style={styles.dismissLink} onPress={onSignOut}>
+                <Text style={styles.dismissText}>{t('auth.signOut')}</Text>
+              </TouchableOpacity>
+            )
+          )}
         </ScrollView>
       </View>
     </Modal>
   );
 }
 
-const styles = StyleSheet.create({
+const createStyles = (VestroColors: AppColors) => StyleSheet.create({
   screen: {
     flex: 1,
     backgroundColor: VestroColors.background,

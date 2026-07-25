@@ -1,9 +1,18 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { getLocales } from 'expo-localization';
 import { createContext, useContext, useEffect, useState } from 'react';
 
-import { DEFAULT_LANGUAGE, Language, translations } from './translations';
+import { FALLBACK_LANGUAGE, Language, translations } from './translations';
 
 const STORAGE_KEY = 'vestro-language';
+
+// No saved preference yet (first launch): match the phone's language when
+// Vestro supports it, otherwise fall back to English rather than assuming
+// French — e.g. a Portuguese-speaking phone should land on English, not French.
+function detectDeviceLanguage(): Language {
+  const deviceCode = getLocales()[0]?.languageCode;
+  return deviceCode && deviceCode in translations ? (deviceCode as Language) : FALLBACK_LANGUAGE;
+}
 
 type TranslationVars = Record<string, string | number>;
 
@@ -14,7 +23,7 @@ function interpolate(template: string, vars?: TranslationVars): string {
   );
 }
 
-type I18nContextValue = {
+export type I18nContextValue = {
   language: Language;
   setLanguage: (language: Language) => void;
   t: (key: keyof (typeof translations)['fr'], vars?: TranslationVars) => string;
@@ -29,7 +38,7 @@ type I18nContextValue = {
 const I18nContext = createContext<I18nContextValue | null>(null);
 
 export function I18nProvider({ children }: { children: React.ReactNode }) {
-  const [language, setLanguageState] = useState<Language>(DEFAULT_LANGUAGE);
+  const [language, setLanguageState] = useState<Language>(detectDeviceLanguage);
 
   useEffect(() => {
     AsyncStorage.getItem(STORAGE_KEY).then((saved) => {

@@ -1,5 +1,5 @@
 import { router, useFocusEffect } from 'expo-router';
-import { useCallback, useState } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import {
   Alert,
   LayoutChangeEvent,
@@ -11,10 +11,11 @@ import {
 } from 'react-native';
 
 import { OutfitPreview } from '@/components/outfit-canvas';
-import { VestroColors, VestroFonts } from '@/constants/theme';
+import { AppColors, VestroFonts } from '@/constants/theme';
 import { useI18n } from '@/i18n/context';
 import { fetchClothingItems } from '@/lib/clothing';
-import { deleteOutfit, fetchOutfits } from '@/lib/outfits';
+import { fetchOutfits } from '@/lib/outfits';
+import { useAppTheme } from '@/theme/context';
 import type { ClothingItem, Outfit } from '@/types/clothing';
 
 function OutfitCard({
@@ -27,6 +28,8 @@ function OutfitCard({
   onPress: () => void;
 }) {
   const { tPlural } = useI18n();
+  const { colors: VestroColors } = useAppTheme();
+  const styles = useMemo(() => createStyles(VestroColors), [VestroColors]);
   const [size, setSize] = useState(0);
 
   function handleLayout(event: LayoutChangeEvent) {
@@ -37,7 +40,12 @@ function OutfitCard({
     <TouchableOpacity style={styles.card} onPress={onPress}>
       <View style={styles.previewWrap} onLayout={handleLayout}>
         {size > 0 && (
-          <OutfitPreview items={items} layout={outfit.layout ?? {}} size={size} />
+          <OutfitPreview
+            items={items}
+            layout={outfit.layout ?? {}}
+            size={size}
+            showPrice={outfit.showPrice}
+          />
         )}
       </View>
 
@@ -53,6 +61,8 @@ function OutfitCard({
 
 export default function TenuesScreen() {
   const { t } = useI18n();
+  const { colors: VestroColors } = useAppTheme();
+  const styles = useMemo(() => createStyles(VestroColors), [VestroColors]);
   const [clothes, setClothes] = useState<ClothingItem[]>([]);
   const [outfits, setOutfits] = useState<Outfit[]>([]);
 
@@ -74,28 +84,6 @@ export default function TenuesScreen() {
       load();
     }, [])
   );
-
-  function openOutfit(outfit: Outfit) {
-    Alert.alert(outfit.name, undefined, [
-      {
-        text: t('outfits.edit'),
-        onPress: () => {
-          router.push(`/create-outfit?id=${outfit.id}`);
-        },
-      },
-      {
-        text: t('common.delete'),
-        style: 'destructive',
-        onPress: () => {
-          setOutfits((currentOutfits) => currentOutfits.filter((item) => item.id !== outfit.id));
-          deleteOutfit(outfit.id).catch((error) =>
-            Alert.alert(t('common.errorTitle'), String(error instanceof Error ? error.message : error))
-          );
-        },
-      },
-      { text: t('common.cancel'), style: 'cancel' },
-    ]);
-  }
 
   return (
     <View style={styles.screen}>
@@ -131,7 +119,7 @@ export default function TenuesScreen() {
                   key={outfit.id}
                   outfit={outfit}
                   items={items}
-                  onPress={() => openOutfit(outfit)}
+                  onPress={() => router.push(`/create-outfit?id=${outfit.id}`)}
                 />
               );
             })}
@@ -142,7 +130,7 @@ export default function TenuesScreen() {
   );
 }
 
-const styles = StyleSheet.create({
+const createStyles = (VestroColors: AppColors) => StyleSheet.create({
   screen: {
     flex: 1,
     backgroundColor: VestroColors.background,
@@ -220,7 +208,7 @@ const styles = StyleSheet.create({
   },
   itemName: {
     marginTop: 9,
-    fontFamily: VestroFonts.serifMediumItalic,
+    fontFamily: VestroFonts.serifMedium,
     fontSize: 14,
     color: VestroColors.ink,
   },

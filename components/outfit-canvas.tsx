@@ -19,13 +19,26 @@ export type CanvasItem = {
   category: string;
   color?: string;
   image?: string;
+  price?: number;
 };
+
+function formatPrice(items: CanvasItem[]): string | null {
+  const total = items.reduce((sum, item) => sum + (item.price ?? 0), 0);
+  const hasPrice = items.some((item) => item.price !== undefined);
+  if (!hasPrice) return null;
+  return `${total.toFixed(2).replace('.', ',')} €`;
+}
 
 const DEFAULT_POSITIONS: Record<string, { x: number; y: number }> = {
   Hauts: { x: 30, y: 10 },
   Bas: { x: 30, y: 150 },
   Chaussures: { x: 30, y: 290 },
   Accessoires: { x: 190, y: 10 },
+  Robes: { x: 190, y: 150 },
+  Sacs: { x: 190, y: 290 },
+  'Couvre-chefs': { x: 110, y: 10 },
+  Bijoux: { x: 110, y: 80 },
+  Montres: { x: 110, y: 220 },
 };
 
 const ITEM_SIZE = 130;
@@ -190,14 +203,17 @@ export function OutfitCanvas({
   layout,
   onLayoutChange,
   height = 420,
+  showPrice = false,
 }: {
   items: CanvasItem[];
   layout: Record<number, CanvasLayout>;
   onLayoutChange: (itemId: number, next: CanvasLayout) => void;
   height?: number;
+  showPrice?: boolean;
 }) {
   const { t } = useI18n();
   const [selectedId, setSelectedId] = useState<number | null>(null);
+  const priceLabel = showPrice ? formatPrice(items) : null;
 
   return (
     <View style={[styles.canvas, { height }]}>
@@ -215,6 +231,12 @@ export function OutfitCanvas({
           }
         />
       ))}
+
+      {priceLabel && (
+        <View style={styles.priceTag} pointerEvents="none">
+          <Text style={styles.priceTagText}>{priceLabel}</Text>
+        </View>
+      )}
     </View>
   );
 }
@@ -223,15 +245,18 @@ export function OutfitPreview({
   items,
   layout,
   size = 172,
+  showPrice = false,
 }: {
   items: CanvasItem[];
   layout: Record<number, CanvasLayout>;
   size?: number;
+  showPrice?: boolean;
 }) {
   const scale = Math.min(
     size / CANVAS_REFERENCE_SIZE.width,
     size / CANVAS_REFERENCE_SIZE.height
   );
+  const priceLabel = showPrice ? formatPrice(items) : null;
 
   return (
     <View style={[styles.canvas, styles.previewOuter, { width: size, height: size }]}>
@@ -272,6 +297,12 @@ export function OutfitPreview({
           </View>
         ))}
       </View>
+
+      {priceLabel && (
+        <View style={styles.priceTagCompact} pointerEvents="none">
+          <Text style={styles.priceTagCompactText}>{priceLabel}</Text>
+        </View>
+      )}
     </View>
   );
 }
@@ -349,6 +380,40 @@ const styles = StyleSheet.create({
   handle_bottomRight: {
     right: -9,
     bottom: -9,
+  },
+  priceTag: {
+    position: 'absolute',
+    right: 14,
+    bottom: 14,
+    backgroundColor: VestroColors.surface,
+    borderWidth: 1,
+    borderColor: VestroColors.border,
+    paddingHorizontal: 11,
+    paddingVertical: 6,
+  },
+  priceTagText: {
+    fontFamily: VestroFonts.sansSemiBold,
+    fontSize: 11,
+    letterSpacing: 1,
+    textTransform: 'uppercase',
+    color: VestroColors.ink,
+  },
+  priceTagCompact: {
+    position: 'absolute',
+    right: 8,
+    bottom: 8,
+    backgroundColor: VestroColors.surface,
+    borderWidth: 1,
+    borderColor: VestroColors.border,
+    paddingHorizontal: 6,
+    paddingVertical: 3,
+  },
+  priceTagCompactText: {
+    fontFamily: VestroFonts.sansSemiBold,
+    fontSize: 9,
+    letterSpacing: 0.5,
+    textTransform: 'uppercase',
+    color: VestroColors.ink,
   },
 });
 

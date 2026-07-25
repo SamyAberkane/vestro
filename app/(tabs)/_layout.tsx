@@ -1,14 +1,19 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
 import { Tabs } from 'expo-router';
+import { useMemo } from 'react';
 import { StyleSheet, TouchableOpacity, View } from 'react-native';
 
+import { ItemReveal } from '@/components/item-reveal';
 import { ProcessingOverlay } from '@/components/processing-overlay';
-import { VestroColors, VestroFonts } from '@/constants/theme';
+import { AppColors, VestroFonts } from '@/constants/theme';
 import { useAddClothing } from '@/hooks/use-add-clothing';
 import { useI18n } from '@/i18n/context';
+import { useAppTheme } from '@/theme/context';
 
 function AddTabButton({ onPress, disabled }: { onPress: () => void; disabled: boolean }) {
   const { t } = useI18n();
+  const { colors: VestroColors } = useAppTheme();
+  const styles = useMemo(() => createStyles(VestroColors), [VestroColors]);
 
   return (
     <View style={styles.addTabSlot} pointerEvents="box-none">
@@ -28,7 +33,10 @@ function AddTabButton({ onPress, disabled }: { onPress: () => void; disabled: bo
 
 export default function TabLayout() {
   const { t } = useI18n();
-  const { addClothing, isProcessing, processingImageUri, batchStep } = useAddClothing();
+  const { colors: VestroColors } = useAppTheme();
+  const styles = useMemo(() => createStyles(VestroColors), [VestroColors]);
+  const { addClothing, isProcessing, processingImageUri, batchStep, revealItems, finishReveal } =
+    useAddClothing();
 
   return (
     <View style={styles.container}>
@@ -107,11 +115,13 @@ export default function TabLayout() {
         stepIndex={batchStep.index}
         stepCount={batchStep.count}
       />
+
+      <ItemReveal items={revealItems} visible={revealItems.length > 0} onDone={finishReveal} />
     </View>
   );
 }
 
-const styles = StyleSheet.create({
+const createStyles = (VestroColors: AppColors) => StyleSheet.create({
   container: {
     flex: 1,
   },

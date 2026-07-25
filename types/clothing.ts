@@ -19,6 +19,7 @@ export type Outfit = {
   name: string;
   itemIds: number[];
   layout: Record<number, CanvasLayout>;
+  showPrice?: boolean;
 };
 
 export type ActiveLook = {

@@ -1,17 +1,20 @@
 import { router } from 'expo-router';
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { ActivityIndicator, Alert, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { useAuth } from '@/auth/context';
-import { VestroColors, VestroFonts } from '@/constants/theme';
+import { AppColors, VestroFonts } from '@/constants/theme';
 import { useI18n } from '@/i18n/context';
 import { deleteAccount } from '@/lib/account';
+import { useAppTheme } from '@/theme/context';
 
 const DESTRUCTIVE_RED = '#DC2626';
 
 export default function AccountScreen() {
   const { t } = useI18n();
+  const { colors: VestroColors } = useAppTheme();
+  const styles = useMemo(() => createStyles(VestroColors), [VestroColors]);
   const { signOut } = useAuth();
   const insets = useSafeAreaInsets();
   const [isDeleting, setIsDeleting] = useState(false);
@@ -78,7 +81,7 @@ export default function AccountScreen() {
   );
 }
 
-const styles = StyleSheet.create({
+const createStyles = (VestroColors: AppColors) => StyleSheet.create({
   screen: {
     flex: 1,
     backgroundColor: VestroColors.background,

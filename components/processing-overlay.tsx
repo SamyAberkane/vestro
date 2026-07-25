@@ -1,5 +1,5 @@
 import { Ionicons } from '@expo/vector-icons';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Image, StyleSheet, Text, View } from 'react-native';
 import Animated, {
   Easing,
@@ -12,8 +12,9 @@ import Animated, {
   withTiming,
 } from 'react-native-reanimated';
 
-import { VestroColors, VestroFonts } from '@/constants/theme';
+import { AppColors, VestroFonts } from '@/constants/theme';
 import { useI18n } from '@/i18n/context';
+import { useAppTheme } from '@/theme/context';
 
 const FRAME_SIZE = 168;
 
@@ -47,6 +48,8 @@ function messageKeyForSliceFraction(fraction: number): 'processing.analyzing' | 
 }
 
 function ScanLine() {
+  const { colors: VestroColors } = useAppTheme();
+  const styles = useMemo(() => createStyles(VestroColors), [VestroColors]);
   const translateY = useSharedValue(-FRAME_SIZE / 2);
 
   useEffect(() => {
@@ -67,6 +70,8 @@ function ScanLine() {
 }
 
 function CornerBracket({ corner }: { corner: 'topLeft' | 'topRight' | 'bottomLeft' | 'bottomRight' }) {
+  const { colors: VestroColors } = useAppTheme();
+  const styles = useMemo(() => createStyles(VestroColors), [VestroColors]);
   const opacity = useSharedValue(0.35);
 
   useEffect(() => {
@@ -87,6 +92,8 @@ function CornerBracket({ corner }: { corner: 'topLeft' | 'topRight' | 'bottomLef
 const CORNERS = ['topLeft', 'topRight', 'bottomLeft', 'bottomRight'] as const;
 
 function StatusIcon({ done }: { done: boolean }) {
+  const { colors: VestroColors } = useAppTheme();
+  const styles = useMemo(() => createStyles(VestroColors), [VestroColors]);
   const scale = useSharedValue(1);
 
   useEffect(() => {
@@ -118,6 +125,8 @@ function StatusIcon({ done }: { done: boolean }) {
 
 export function ProcessingOverlay({ visible, imageUri, stepIndex = 1, stepCount = 1 }: ProcessingOverlayProps) {
   const { t } = useI18n();
+  const { colors: VestroColors } = useAppTheme();
+  const styles = useMemo(() => createStyles(VestroColors), [VestroColors]);
   const [phase, setPhase] = useState<Phase>('idle');
   const [progress, setProgress] = useState(0);
   const [lastImageUri, setLastImageUri] = useState<string | undefined>(undefined);
@@ -243,7 +252,7 @@ const BRACKET_POSITION: Record<string, object> = {
   bottomRight: { bottom: -1, right: -1, borderLeftWidth: 0, borderTopWidth: 0 },
 };
 
-const styles = StyleSheet.create({
+const createStyles = (VestroColors: AppColors) => StyleSheet.create({
   overlay: {
     ...StyleSheet.absoluteFillObject,
     backgroundColor: 'rgba(30,26,19,0.4)',

@@ -1,6 +1,6 @@
 import { useFocusEffect } from 'expo-router';
 import * as ImagePicker from 'expo-image-picker';
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useMemo, useRef, useState } from 'react';
 import {
   Alert,
   Image,
@@ -13,17 +13,21 @@ import {
 
 import { ClothingOptionsSheet } from '@/components/clothing-options-sheet';
 import { ColorPickerModal } from '@/components/color-picker-modal';
+import { CropModal } from '@/components/crop-modal';
 import { PaywallModal } from '@/components/paywall-modal';
 import { ProcessingOverlay } from '@/components/processing-overlay';
-import { VestroCategories, VestroColors, VestroFonts, VestroPalette } from '@/constants/theme';
+import { AppColors, VestroCategories, VestroFonts, VestroPalette } from '@/constants/theme';
 import { useI18n } from '@/i18n/context';
 import { deleteClothingItem, fetchClothingItems, updateClothingItem } from '@/lib/clothing';
 import { getIsPremium } from '@/lib/premium';
+import { useAppTheme } from '@/theme/context';
 import type { ClothingItem } from '@/types/clothing';
 import { removeBackground } from '@/utils/remove-background';
 
 export default function DressingScreen() {
   const { t, tCategory } = useI18n();
+  const { colors: VestroColors } = useAppTheme();
+  const styles = useMemo(() => createStyles(VestroColors), [VestroColors]);
   const [clothes, setClothes] = useState<ClothingItem[]>([]);
 const [selectedCategory, setSelectedCategory] = useState('Tout');
 const [showAvailableOnly, setShowAvailableOnly] = useState(false);
@@ -36,6 +40,7 @@ const [colorPickerVisible, setColorPickerVisible] = useState(false);
 const colorSelectRef = useRef<((color: string | undefined) => void) | null>(null);
 const colorDismissRef = useRef<(() => void) | null>(null);
 const [optionsItemId, setOptionsItemId] = useState<number | null>(null);
+const [cropTarget, setCropTarget] = useState<{ id: number; image: string } | null>(null);
 const [paywallVisible, setPaywallVisible] = useState(false);
 const [isPremium, setIsPremium] = useState(false);
 
@@ -106,6 +111,16 @@ async function updateOptionsItem(id: number, patch: Parameters<typeof updateClot
 
 function openClothingOptions(item: ClothingItem) {
   setOptionsItemId(item.id);
+}
+
+function requestCrop() {
+  if (!optionsItem?.image) return;
+  const target = { id: optionsItem.id, image: optionsItem.image };
+  // Two RN <Modal>s open at once is flaky (the second one can silently fail
+  // to present, especially on Android) — close the options sheet first and
+  // let its dismiss animation finish before presenting the crop modal.
+  setOptionsItemId(null);
+  setTimeout(() => setCropTarget(target), 300);
 }
 
 async function handleOptionsPhotoChange() {
@@ -331,6 +346,7 @@ async function handleOptionsPhotoChange() {
           openColorPicker((color) => updateOptionsItem(targetId, { color }));
         }}
         onRequestPhotoChange={handleOptionsPhotoChange}
+        onRequestCrop={requestCrop}
         moveAction={{
           label: t('dressing.moveToWishlist'),
           onPress: () => optionsItem && updateOptionsItem(optionsItem.id, { status: 'wishlist' }),
@@ -346,6 +362,16 @@ async function handleOptionsPhotoChange() {
         }}
       />
 
+      <CropModal
+        visible={cropTarget !== null}
+        imageUri={cropTarget?.image}
+        onCancel={() => setCropTarget(null)}
+        onConfirm={(croppedDataUri) => {
+          if (cropTarget) updateOptionsItem(cropTarget.id, { imageDataUri: croppedDataUri });
+          setCropTarget(null);
+        }}
+      />
+
       <PaywallModal
         visible={paywallVisible}
         onClose={() => setPaywallVisible(false)}
@@ -355,7 +381,7 @@ async function handleOptionsPhotoChange() {
   );
 }
 
-const styles = StyleSheet.create({
+const createStyles = (VestroColors: AppColors) => StyleSheet.create({
   screen: {
     flex: 1,
     backgroundColor: VestroColors.background,
@@ -509,7 +535,7 @@ const styles = StyleSheet.create({
   },
   itemName: {
     marginTop: 8,
-    fontFamily: VestroFonts.serifMediumItalic,
+    fontFamily: VestroFonts.serifMedium,
     fontSize: 12,
     color: VestroColors.ink,
   },

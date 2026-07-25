@@ -55,7 +55,14 @@
         {
           "locationWhenInUsePermission": "Vestro utilise ta position pour afficher la météo du jour."
         }
-      ]
+      ],
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Vestro accède à tes photos pour ajouter des vêtements à ton dressing."
+        }
+      ],
+      "expo-localization"
     ],
     "experiments": {
       "typedRoutes": true,

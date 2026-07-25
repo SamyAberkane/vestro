@@ -7,7 +7,8 @@ export const LANGUAGES: { code: Language; label: string; flag: string }[] = [
   { code: 'it', label: 'Italiano', flag: '🇮🇹' },
 ];
 
-export const DEFAULT_LANGUAGE: Language = 'fr';
+/** Used when the device's language isn't one of the languages above. */
+export const FALLBACK_LANGUAGE: Language = 'en';
 
 // Category and color values are stored as-is in AsyncStorage (item.category,
 // swatch labels) and constrain the Gemini prompt in utils/remove-background.ts
@@ -30,6 +31,11 @@ const fr = {
   'categories.Bas': 'Bas',
   'categories.Chaussures': 'Chaussures',
   'categories.Accessoires': 'Accessoires',
+  'categories.Robes': 'Robes',
+  'categories.Montres': 'Montres',
+  'categories.Bijoux': 'Bijoux',
+  'categories.Sacs': 'Sacs',
+  'categories.Couvre-chefs': 'Couvre-chefs',
 
   'colors.Blanc': 'Blanc',
   'colors.Noir': 'Noir',
@@ -96,7 +102,6 @@ const fr = {
   'outfits.emptyText': 'Assemble des pièces de ton dressing pour créer ta première tenue.',
   'outfits.pieceCount_one': '{{count}} pièce',
   'outfits.pieceCount_other': '{{count}} pièces',
-  'outfits.edit': 'Modifier',
 
   'createOutfit.save': 'Enregistrer',
   'createOutfit.editTitle': 'Modifier la tenue',
@@ -104,6 +109,11 @@ const fr = {
   'createOutfit.namePlaceholder': 'Nom de la tenue',
   'createOutfit.missingNameTitle': 'Nom manquant',
   'createOutfit.missingNameMessage': 'Donne un nom à ta tenue.',
+  'createOutfit.showPrice': 'Afficher le prix sur le tableau',
+  'createOutfit.deleteButton': 'Supprimer cette tenue',
+  'createOutfit.deleteConfirmTitle': 'Supprimer cette tenue ?',
+  'createOutfit.deleteConfirmMessage': '« {{name}} » sera définitivement supprimée.',
+  'createOutfit.deleting': 'Suppression…',
 
   'options.namePlaceholder': 'Nom du vêtement',
   'options.categoryLabel': 'Catégorie',
@@ -114,6 +124,7 @@ const fr = {
   'options.reasonPlaceholder': 'Prêté à Julie, au pressing…',
   'options.changeColor': 'Changer la couleur',
   'options.changePhoto': 'Changer la photo',
+  'options.cropPhoto': 'Rogner la photo',
   'options.deleteConfirmTitle': 'Supprimer ce vêtement ?',
   'options.deleteConfirmMessage': '« {{name}} » sera définitivement supprimé.',
   'options.deleteButton': 'Supprimer le vêtement',
@@ -127,6 +138,29 @@ const fr = {
   'processing.stepLabel': 'Photo {{index}} / {{count}}',
   'processing.subtext': 'Vestro fait appel à l’IA pour détourer la photo — quelques secondes.',
 
+  'reveal.newItem': 'Nouvel article',
+
+  'photoTips.title': 'Avant d’ajouter une photo',
+  'photoTips.message':
+    'Une photo ratée donne un résultat raté : prends quelques secondes pour bien faire.\n\n' +
+    '• Un seul vêtement par photo\n' +
+    '• Posé à plat, sur un cintre ou sur un fond uni — ou porté, mais alors face à l’objectif, ' +
+    'bras le long du corps\n' +
+    '• Le vêtement entier dans le cadre, rien coupé sur les bords\n' +
+    '• Une bonne lumière, net et pas trop sombre',
+  'photoTips.gotIt': 'J’ai compris',
+
+  'photoIssue.alertTitle': 'Photo non exploitable',
+  'photoIssue.multiple_items': 'Plusieurs vêtements sont visibles — recadre pour n’en montrer qu’un seul.',
+  'photoIssue.cropped': 'Le vêtement est coupé sur les bords — reprends la photo en le montrant en entier.',
+  'photoIssue.too_dark_or_blurry': 'La photo est trop sombre ou trop floue pour bien distinguer le vêtement.',
+  'photoIssue.no_item_detected': 'Aucun vêtement n’a été reconnu sur cette photo.',
+  'photoIssue.other': 'Cette photo ne permet pas un bon résultat — réessaie avec une autre.',
+
+  'crop.title': 'Rogner la photo',
+  'crop.hint': 'Fais glisser les coins pour ajuster le cadrage.',
+  'crop.confirmButton': 'Rogner',
+
   'auth.tagline': 'Ton dressing, où que tu sois.',
   'auth.emailPlaceholder': 'Adresse email',
   'auth.passwordPlaceholder': 'Mot de passe',
@@ -139,8 +173,19 @@ const fr = {
   'auth.signUpSuccessMessage': 'Vérifie tes emails pour confirmer ton compte, puis connecte-toi.',
   'auth.signOut': 'Se déconnecter',
 
+  'onboarding.skip': 'Passer',
+  'onboarding.next': 'Suivant',
+  'onboarding.start': 'Commencer',
+  'onboarding.slide1Title': 'Prends-le en photo',
+  'onboarding.slide1Desc': 'Vestro isole chaque pièce et la range sur fond blanc, prête à l’emploi, dans ton dressing.',
+  'onboarding.slide2Title': 'Compose sur le tableau',
+  'onboarding.slide2Desc': 'Glisse, redimensionne, assemble — construis tes tenues comme un moodboard.',
+  'onboarding.slide3Title': 'Toujours avec toi',
+  'onboarding.slide3Desc': 'Wishlist, prix, tenue du jour : ton dressing te suit partout, où que tu sois.',
+
   'account.entryPoint': 'Compte',
   'account.title': 'Compte',
+  'account.darkMode': 'Mode nuit',
   'account.deleteCta': 'Supprimer mon compte',
   'account.deleteConfirmTitle': 'Supprimer ton compte ?',
   'account.deleteConfirmMessage': 'Cette action est définitive : ton dressing, tes tenues et tes photos seront supprimés et ne pourront pas être récupérés.',
@@ -199,6 +244,11 @@ const en: Dictionary = {
   'categories.Bas': 'Bottoms',
   'categories.Chaussures': 'Shoes',
   'categories.Accessoires': 'Accessories',
+  'categories.Robes': 'Dresses',
+  'categories.Montres': 'Watches',
+  'categories.Bijoux': 'Jewelry',
+  'categories.Sacs': 'Bags',
+  'categories.Couvre-chefs': 'Headwear',
 
   'colors.Blanc': 'White',
   'colors.Noir': 'Black',
@@ -265,7 +315,6 @@ const en: Dictionary = {
   'outfits.emptyText': 'Put together pieces from your closet to create your first outfit.',
   'outfits.pieceCount_one': '{{count}} piece',
   'outfits.pieceCount_other': '{{count}} pieces',
-  'outfits.edit': 'Edit',
 
   'createOutfit.save': 'Save',
   'createOutfit.editTitle': 'Edit outfit',
@@ -273,6 +322,11 @@ const en: Dictionary = {
   'createOutfit.namePlaceholder': 'Outfit name',
   'createOutfit.missingNameTitle': 'Missing name',
   'createOutfit.missingNameMessage': 'Give your outfit a name.',
+  'createOutfit.showPrice': 'Show price on the board',
+  'createOutfit.deleteButton': 'Delete this outfit',
+  'createOutfit.deleteConfirmTitle': 'Delete this outfit?',
+  'createOutfit.deleteConfirmMessage': '“{{name}}” will be permanently deleted.',
+  'createOutfit.deleting': 'Deleting…',
 
   'options.namePlaceholder': 'Item name',
   'options.categoryLabel': 'Category',
@@ -283,6 +337,7 @@ const en: Dictionary = {
   'options.reasonPlaceholder': 'Lent to a friend, at the dry cleaner…',
   'options.changeColor': 'Change color',
   'options.changePhoto': 'Change photo',
+  'options.cropPhoto': 'Crop photo',
   'options.deleteConfirmTitle': 'Delete this item?',
   'options.deleteConfirmMessage': '“{{name}}” will be permanently deleted.',
   'options.deleteButton': 'Delete item',
@@ -296,6 +351,29 @@ const en: Dictionary = {
   'processing.stepLabel': 'Photo {{index}} / {{count}}',
   'processing.subtext': 'Vestro is calling the AI to cut out the photo — a few seconds.',
 
+  'reveal.newItem': 'New item',
+
+  'photoTips.title': 'Before you add a photo',
+  'photoTips.message':
+    'A bad photo makes a bad result — take a few seconds to get it right.\n\n' +
+    '• One item per photo\n' +
+    '• Laid flat, on a hanger, or against a plain background — or worn, but then face the ' +
+    'camera with your arms at your sides\n' +
+    '• The whole item in frame, nothing cropped at the edges\n' +
+    '• Good lighting, sharp and not too dark',
+  'photoTips.gotIt': 'Got it',
+
+  'photoIssue.alertTitle': 'Photo not usable',
+  'photoIssue.multiple_items': 'More than one item is visible — reframe to show just one.',
+  'photoIssue.cropped': 'The item is cut off at the edges — retake the photo showing it in full.',
+  'photoIssue.too_dark_or_blurry': 'The photo is too dark or blurry to make out the item clearly.',
+  'photoIssue.no_item_detected': 'No clothing item was recognized in this photo.',
+  'photoIssue.other': 'This photo won’t give a good result — try another one.',
+
+  'crop.title': 'Crop photo',
+  'crop.hint': 'Drag the corners to adjust the framing.',
+  'crop.confirmButton': 'Crop',
+
   'auth.tagline': 'Your closet, wherever you are.',
   'auth.emailPlaceholder': 'Email address',
   'auth.passwordPlaceholder': 'Password',
@@ -308,8 +386,19 @@ const en: Dictionary = {
   'auth.signUpSuccessMessage': 'Check your email to confirm your account, then sign in.',
   'auth.signOut': 'Sign out',
 
+  'onboarding.skip': 'Skip',
+  'onboarding.next': 'Next',
+  'onboarding.start': 'Get started',
+  'onboarding.slide1Title': 'Snap a photo',
+  'onboarding.slide1Desc': 'Vestro cuts out each piece onto a white background, ready to wear, right in your closet.',
+  'onboarding.slide2Title': 'Build on the board',
+  'onboarding.slide2Desc': 'Drag, resize, arrange — put together outfits like a moodboard.',
+  'onboarding.slide3Title': 'Always with you',
+  'onboarding.slide3Desc': 'Wishlist, prices, today’s outfit: your closet follows you everywhere.',
+
   'account.entryPoint': 'Account',
   'account.title': 'Account',
+  'account.darkMode': 'Dark mode',
   'account.deleteCta': 'Delete my account',
   'account.deleteConfirmTitle': 'Delete your account?',
   'account.deleteConfirmMessage': 'This is permanent: your closet, outfits, and photos will be deleted and cannot be recovered.',
@@ -365,6 +454,11 @@ const es: Dictionary = {
   'categories.Bas': 'Partes de abajo',
   'categories.Chaussures': 'Zapatos',
   'categories.Accessoires': 'Accesorios',
+  'categories.Robes': 'Vestidos',
+  'categories.Montres': 'Relojes',
+  'categories.Bijoux': 'Joyas',
+  'categories.Sacs': 'Bolsos',
+  'categories.Couvre-chefs': 'Sombreros',
 
   'colors.Blanc': 'Blanco',
   'colors.Noir': 'Negro',
@@ -431,7 +525,6 @@ const es: Dictionary = {
   'outfits.emptyText': 'Combina prendas de tu armario para crear tu primer look.',
   'outfits.pieceCount_one': '{{count}} prenda',
   'outfits.pieceCount_other': '{{count}} prendas',
-  'outfits.edit': 'Editar',
 
   'createOutfit.save': 'Guardar',
   'createOutfit.editTitle': 'Editar look',
@@ -439,6 +532,11 @@ const es: Dictionary = {
   'createOutfit.namePlaceholder': 'Nombre del look',
   'createOutfit.missingNameTitle': 'Falta el nombre',
   'createOutfit.missingNameMessage': 'Ponle un nombre a tu look.',
+  'createOutfit.showPrice': 'Mostrar el precio en el tablero',
+  'createOutfit.deleteButton': 'Eliminar este look',
+  'createOutfit.deleteConfirmTitle': '¿Eliminar este look?',
+  'createOutfit.deleteConfirmMessage': '«{{name}}» se eliminará definitivamente.',
+  'createOutfit.deleting': 'Eliminando…',
 
   'options.namePlaceholder': 'Nombre de la prenda',
   'options.categoryLabel': 'Categoría',
@@ -449,6 +547,7 @@ const es: Dictionary = {
   'options.reasonPlaceholder': 'Prestado a una amiga, en la tintorería…',
   'options.changeColor': 'Cambiar color',
   'options.changePhoto': 'Cambiar foto',
+  'options.cropPhoto': 'Recortar foto',
   'options.deleteConfirmTitle': '¿Eliminar esta prenda?',
   'options.deleteConfirmMessage': '«{{name}}» se eliminará definitivamente.',
   'options.deleteButton': 'Eliminar prenda',
@@ -462,6 +561,29 @@ const es: Dictionary = {
   'processing.stepLabel': 'Foto {{index}} / {{count}}',
   'processing.subtext': 'Vestro llama a la IA para recortar la foto — unos segundos.',
 
+  'reveal.newItem': 'Artículo nuevo',
+
+  'photoTips.title': 'Antes de añadir una foto',
+  'photoTips.message':
+    'Una foto mala da un resultado malo — tómate unos segundos para hacerlo bien.\n\n' +
+    '• Una sola prenda por foto\n' +
+    '• Extendida, en una percha o sobre un fondo liso — o puesta, pero entonces de frente a la ' +
+    'cámara y con los brazos pegados al cuerpo\n' +
+    '• La prenda completa en el encuadre, sin recortes en los bordes\n' +
+    '• Buena iluminación, nítida y no demasiado oscura',
+  'photoTips.gotIt': 'Entendido',
+
+  'photoIssue.alertTitle': 'Foto no utilizable',
+  'photoIssue.multiple_items': 'Se ven varias prendas — recorta para mostrar solo una.',
+  'photoIssue.cropped': 'La prenda está cortada en los bordes — repite la foto mostrándola entera.',
+  'photoIssue.too_dark_or_blurry': 'La foto está demasiado oscura o borrosa para distinguir bien la prenda.',
+  'photoIssue.no_item_detected': 'No se reconoció ninguna prenda en esta foto.',
+  'photoIssue.other': 'Esta foto no dará un buen resultado — prueba con otra.',
+
+  'crop.title': 'Recortar foto',
+  'crop.hint': 'Arrastra las esquinas para ajustar el encuadre.',
+  'crop.confirmButton': 'Recortar',
+
   'auth.tagline': 'Tu armario, estés donde estés.',
   'auth.emailPlaceholder': 'Correo electrónico',
   'auth.passwordPlaceholder': 'Contraseña',
@@ -474,8 +596,19 @@ const es: Dictionary = {
   'auth.signUpSuccessMessage': 'Revisa tu email para confirmar tu cuenta, luego inicia sesión.',
   'auth.signOut': 'Cerrar sesión',
 
+  'onboarding.skip': 'Omitir',
+  'onboarding.next': 'Siguiente',
+  'onboarding.start': 'Empezar',
+  'onboarding.slide1Title': 'Fotografíalo',
+  'onboarding.slide1Desc': 'Vestro recorta cada prenda sobre fondo blanco, lista para usar, en tu armario.',
+  'onboarding.slide2Title': 'Compón en el tablero',
+  'onboarding.slide2Desc': 'Arrastra, redimensiona, combina — crea looks como un moodboard.',
+  'onboarding.slide3Title': 'Siempre contigo',
+  'onboarding.slide3Desc': 'Lista de deseos, precios, look del día: tu armario te sigue a todas partes.',
+
   'account.entryPoint': 'Cuenta',
   'account.title': 'Cuenta',
+  'account.darkMode': 'Modo noche',
   'account.deleteCta': 'Eliminar mi cuenta',
   'account.deleteConfirmTitle': '¿Eliminar tu cuenta?',
   'account.deleteConfirmMessage': 'Esta acción es definitiva: tu armario, tus looks y tus fotos se eliminarán y no podrán recuperarse.',
@@ -531,6 +664,11 @@ const it: Dictionary = {
   'categories.Bas': 'Capi inferiori',
   'categories.Chaussures': 'Scarpe',
   'categories.Accessoires': 'Accessori',
+  'categories.Robes': 'Abiti',
+  'categories.Montres': 'Orologi',
+  'categories.Bijoux': 'Gioielli',
+  'categories.Sacs': 'Borse',
+  'categories.Couvre-chefs': 'Copricapi',
 
   'colors.Blanc': 'Bianco',
   'colors.Noir': 'Nero',
@@ -597,7 +735,6 @@ const it: Dictionary = {
   'outfits.emptyText': 'Combina i capi del tuo armadio per creare il tuo primo outfit.',
   'outfits.pieceCount_one': '{{count}} capo',
   'outfits.pieceCount_other': '{{count}} capi',
-  'outfits.edit': 'Modifica',
 
   'createOutfit.save': 'Salva',
   'createOutfit.editTitle': 'Modifica outfit',
@@ -605,6 +742,11 @@ const it: Dictionary = {
   'createOutfit.namePlaceholder': 'Nome dell’outfit',
   'createOutfit.missingNameTitle': 'Nome mancante',
   'createOutfit.missingNameMessage': 'Dai un nome al tuo outfit.',
+  'createOutfit.showPrice': 'Mostra il prezzo sulla tavola',
+  'createOutfit.deleteButton': 'Elimina questo outfit',
+  'createOutfit.deleteConfirmTitle': 'Eliminare questo outfit?',
+  'createOutfit.deleteConfirmMessage': '«{{name}}» sarà eliminato definitivamente.',
+  'createOutfit.deleting': 'Eliminazione…',
 
   'options.namePlaceholder': 'Nome del capo',
   'options.categoryLabel': 'Categoria',
@@ -615,6 +757,7 @@ const it: Dictionary = {
   'options.reasonPlaceholder': 'Prestato a un’amica, in lavanderia…',
   'options.changeColor': 'Cambia colore',
   'options.changePhoto': 'Cambia foto',
+  'options.cropPhoto': 'Ritaglia foto',
   'options.deleteConfirmTitle': 'Eliminare questo capo?',
   'options.deleteConfirmMessage': '«{{name}}» sarà eliminato definitivamente.',
   'options.deleteButton': 'Elimina capo',
@@ -628,6 +771,29 @@ const it: Dictionary = {
   'processing.stepLabel': 'Foto {{index}} / {{count}}',
   'processing.subtext': 'Vestro chiama l’IA per ritagliare la foto — qualche secondo.',
 
+  'reveal.newItem': 'Nuovo capo',
+
+  'photoTips.title': 'Prima di aggiungere una foto',
+  'photoTips.message':
+    'Una foto sbagliata dà un risultato sbagliato — prenditi qualche secondo per farla bene.\n\n' +
+    '• Un solo capo per foto\n' +
+    '• Disteso, su una gruccia o su uno sfondo neutro — oppure indossato, ma allora di fronte ' +
+    'alla fotocamera con le braccia lungo i fianchi\n' +
+    '• Il capo intero nell’inquadratura, senza tagli sui bordi\n' +
+    '• Buona illuminazione, nitida e non troppo scura',
+  'photoTips.gotIt': 'Ho capito',
+
+  'photoIssue.alertTitle': 'Foto non utilizzabile',
+  'photoIssue.multiple_items': 'Sono visibili più capi — inquadra un solo capo.',
+  'photoIssue.cropped': 'Il capo è tagliato sui bordi — rifai la foto mostrandolo per intero.',
+  'photoIssue.too_dark_or_blurry': 'La foto è troppo scura o sfocata per distinguere bene il capo.',
+  'photoIssue.no_item_detected': 'Non è stato riconosciuto alcun capo in questa foto.',
+  'photoIssue.other': 'Questa foto non darà un buon risultato — prova con un’altra.',
+
+  'crop.title': 'Ritaglia foto',
+  'crop.hint': 'Trascina gli angoli per regolare l’inquadratura.',
+  'crop.confirmButton': 'Ritaglia',
+
   'auth.tagline': 'Il tuo armadio, ovunque tu sia.',
   'auth.emailPlaceholder': 'Indirizzo email',
   'auth.passwordPlaceholder': 'Password',
@@ -640,8 +806,19 @@ const it: Dictionary = {
   'auth.signUpSuccessMessage': 'Controlla la tua email per confermare l’account, poi accedi.',
   'auth.signOut': 'Esci',
 
+  'onboarding.skip': 'Salta',
+  'onboarding.next': 'Avanti',
+  'onboarding.start': 'Inizia',
+  'onboarding.slide1Title': 'Fotografalo',
+  'onboarding.slide1Desc': 'Vestro ritaglia ogni capo su sfondo bianco, pronto all’uso, nel tuo armadio.',
+  'onboarding.slide2Title': 'Componi sulla tavola',
+  'onboarding.slide2Desc': 'Trascina, ridimensiona, combina — crea outfit come una moodboard.',
+  'onboarding.slide3Title': 'Sempre con te',
+  'onboarding.slide3Desc': 'Wishlist, prezzi, outfit del giorno: il tuo armadio ti segue ovunque.',
+
   'account.entryPoint': 'Account',
   'account.title': 'Account',
+  'account.darkMode': 'Modalità notte',
   'account.deleteCta': 'Elimina il mio account',
   'account.deleteConfirmTitle': 'Eliminare il tuo account?',
   'account.deleteConfirmMessage': 'Questa azione è definitiva: il tuo armadio, i tuoi outfit e le tue foto verranno eliminati e non potranno essere recuperati.',
