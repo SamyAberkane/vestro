@@ -7,25 +7,40 @@ import {
   StyleSheet,
   Text,
   TouchableOpacity,
+  useWindowDimensions,
   View,
 } from 'react-native';
 
+import { ConfirmModal } from '@/components/confirm-modal';
 import { OutfitPreview } from '@/components/outfit-canvas';
 import { AppColors, VestroFonts } from '@/constants/theme';
 import { useI18n } from '@/i18n/context';
 import { fetchClothingItems } from '@/lib/clothing';
-import { fetchOutfits } from '@/lib/outfits';
+import { deleteOutfit, fetchOutfits } from '@/lib/outfits';
 import { useAppTheme } from '@/theme/context';
 import type { ClothingItem, Outfit } from '@/types/clothing';
+
+// Content horizontal padding (styles.content) and inter-card gap — kept as
+// constants so the column-count math below stays readable. Same approach as
+// the Dressing tab: fit as many comfortable, phone-sized cards as the actual
+// screen width allows, instead of always doing 2 columns stretched to fill
+// whatever width is available (which turns into huge cards on a wide iPad).
+const CONTENT_PADDING = 20;
+const GRID_GAP = 20;
+const TARGET_CARD_WIDTH = 170;
 
 function OutfitCard({
   outfit,
   items,
+  cardWidth,
   onPress,
+  onLongPress,
 }: {
   outfit: Outfit;
   items: ClothingItem[];
+  cardWidth: number;
   onPress: () => void;
+  onLongPress: () => void;
 }) {
   const { tPlural } = useI18n();
   const { colors: VestroColors } = useAppTheme();
@@ -37,7 +52,11 @@ function OutfitCard({
   }
 
   return (
-    <TouchableOpacity style={styles.card} onPress={onPress}>
+    <TouchableOpacity
+      style={[styles.card, { width: cardWidth }]}
+      onPress={onPress}
+      onLongPress={onLongPress}
+    >
       <View style={styles.previewWrap} onLayout={handleLayout}>
         {size > 0 && (
           <OutfitPreview
@@ -63,8 +82,18 @@ export default function TenuesScreen() {
   const { t } = useI18n();
   const { colors: VestroColors } = useAppTheme();
   const styles = useMemo(() => createStyles(VestroColors), [VestroColors]);
+  const { width: windowWidth } = useWindowDimensions();
   const [clothes, setClothes] = useState<ClothingItem[]>([]);
   const [outfits, setOutfits] = useState<Outfit[]>([]);
+  const [deleteTarget, setDeleteTarget] = useState<Outfit | null>(null);
+  const [isDeleting, setIsDeleting] = useState(false);
+
+  const availableWidth = windowWidth - CONTENT_PADDING * 2;
+  const numColumns = Math.max(
+    2,
+    Math.floor((availableWidth + GRID_GAP) / (TARGET_CARD_WIDTH + GRID_GAP))
+  );
+  const cardWidth = (availableWidth - GRID_GAP * (numColumns - 1)) / numColumns;
 
   useFocusEffect(
     useCallback(() => {
@@ -84,6 +113,20 @@ export default function TenuesScreen() {
       load();
     }, [])
   );
+
+  async function confirmDeleteOutfit() {
+    if (!deleteTarget) return;
+
+    setIsDeleting(true);
+    try {
+      await deleteOutfit(deleteTarget.id);
+      setOutfits((current) => current.filter((outfit) => outfit.id !== deleteTarget.id));
+      setDeleteTarget(null);
+    } catch (error) {
+      Alert.alert(t('common.errorTitle'), String(error instanceof Error ? error.message : error));
+    }
+    setIsDeleting(false);
+  }
 
   return (
     <View style={styles.screen}>
@@ -119,13 +162,26 @@ export default function TenuesScreen() {
                   key={outfit.id}
                   outfit={outfit}
                   items={items}
+                  cardWidth={cardWidth}
                   onPress={() => router.push(`/create-outfit?id=${outfit.id}`)}
+                  onLongPress={() => setDeleteTarget(outfit)}
                 />
               );
             })}
           </View>
         )}
       </ScrollView>
+
+      <ConfirmModal
+        visible={deleteTarget !== null}
+        title={t('createOutfit.deleteConfirmTitle')}
+        message={t('createOutfit.deleteConfirmMessage', { name: deleteTarget?.name ?? '' })}
+        confirmLabel={isDeleting ? t('createOutfit.deleting') : t('common.delete')}
+        cancelLabel={t('common.cancel')}
+        destructive
+        onConfirm={confirmDeleteOutfit}
+        onCancel={() => setDeleteTarget(null)}
+      />
     </View>
   );
 }
@@ -196,12 +252,9 @@ const createStyles = (VestroColors: AppColors) => StyleSheet.create({
     marginTop: 32,
     flexDirection: 'row',
     flexWrap: 'wrap',
-    justifyContent: 'space-between',
-    rowGap: 20,
+    gap: GRID_GAP,
   },
-  card: {
-    width: '48%',
-  },
+  card: {},
   previewWrap: {
     width: '100%',
     aspectRatio: 1,

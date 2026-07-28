@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
   Alert,
   Image,
@@ -6,6 +6,7 @@ import {
   Modal,
   Platform,
   Pressable,
+  ScrollView,
   StyleSheet,
   Text,
   TextInput,
@@ -16,6 +17,7 @@ import {
 import { AppColors, VestroFonts } from '@/constants/theme';
 import { useI18n } from '@/i18n/context';
 import { useAppTheme } from '@/theme/context';
+import { currencySymbol, formatPriceInput, isUSD } from '@/utils/currency';
 
 export type ClothingOptionsItem = {
   id: number;
@@ -43,10 +45,6 @@ type ClothingOptionsSheetProps = {
   onDelete: () => void;
 };
 
-function formatPriceInput(price: number | undefined): string {
-  return price === undefined ? '' : price.toString().replace('.', ',');
-}
-
 export function ClothingOptionsSheet({
   item,
   categories,
@@ -61,22 +59,25 @@ export function ClothingOptionsSheet({
   moveAction,
   onDelete,
 }: ClothingOptionsSheetProps) {
-  const { t, tCategory } = useI18n();
+  const { t, tCategory, language } = useI18n();
   const { colors: VestroColors } = useAppTheme();
   const styles = useMemo(() => createStyles(VestroColors), [VestroColors]);
   const [nameDraft, setNameDraft] = useState('');
   const [priceDraft, setPriceDraft] = useState('');
   const [reasonDraft, setReasonDraft] = useState('');
-  const [syncedItemId, setSyncedItemId] = useState<number | null>(null);
+
+  // Only reset the drafts when a *different* item is opened — not on every
+  // render — so a parent re-render while the user is mid-keystroke can't
+  // stomp what they just typed back to the last committed value.
+  useEffect(() => {
+    if (!item) return;
+    setNameDraft(item.name);
+    setPriceDraft(formatPriceInput(item.price, language));
+    setReasonDraft(item.unavailableReason ?? '');
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [item?.id]);
 
   if (!item) return null;
-
-  if (item.id !== syncedItemId) {
-    setSyncedItemId(item.id);
-    setNameDraft(item.name);
-    setPriceDraft(formatPriceInput(item.price));
-    setReasonDraft(item.unavailableReason ?? '');
-  }
 
   function commitName() {
     const trimmed = nameDraft.trim();
@@ -92,7 +93,7 @@ export function ClothingOptionsSheet({
     }
     const parsed = Number(normalized);
     if (Number.isNaN(parsed)) {
-      setPriceDraft(formatPriceInput(item?.price));
+      setPriceDraft(formatPriceInput(item?.price, language));
       return;
     }
     onChangePrice(parsed);
@@ -121,6 +122,11 @@ export function ClothingOptionsSheet({
           <Pressable style={styles.sheet} onPress={(e) => e.stopPropagation()}>
             <View style={styles.handle} />
 
+            <ScrollView
+              contentContainerStyle={styles.scrollContent}
+              keyboardShouldPersistTaps="handled"
+              showsVerticalScrollIndicator={false}
+            >
             <View style={styles.header}>
               {item.image ? (
                 <TouchableOpacity
@@ -176,6 +182,9 @@ export function ClothingOptionsSheet({
             <View style={styles.row}>
               <Text style={styles.rowLabel}>{t('options.priceLabel')}</Text>
               <View style={styles.priceInputWrap}>
+                {isUSD(language) && (
+                  <Text style={styles.pricePrefix}>{currencySymbol(language)}</Text>
+                )}
                 <TextInput
                   value={priceDraft}
                   onChangeText={setPriceDraft}
@@ -187,7 +196,9 @@ export function ClothingOptionsSheet({
                   style={styles.priceInput}
                   returnKeyType="done"
                 />
-                <Text style={styles.priceSuffix}>€</Text>
+                {!isUSD(language) && (
+                  <Text style={styles.priceSuffix}>{currencySymbol(language)}</Text>
+                )}
               </View>
             </View>
 
@@ -263,6 +274,7 @@ export function ClothingOptionsSheet({
             <TouchableOpacity style={styles.deleteButton} onPress={confirmDelete}>
               <Text style={styles.deleteText}>{t('options.deleteButton')}</Text>
             </TouchableOpacity>
+            </ScrollView>
           </Pressable>
         </KeyboardAvoidingView>
       </Pressable>
@@ -283,11 +295,18 @@ const createStyles = (VestroColors: AppColors) => StyleSheet.create({
   },
   sheet: {
     width: '100%',
+    // Caps how tall the sheet can grow so there's always room left for the
+    // keyboard to push it up without shoving the top (name field) off the
+    // top of the screen — the ScrollView below handles anything that
+    // doesn't fit instead of the whole sheet just sliding upward.
+    maxHeight: '88%',
     backgroundColor: VestroColors.surface,
     borderTopLeftRadius: 20,
     borderTopRightRadius: 20,
-    paddingHorizontal: 20,
     paddingTop: 10,
+  },
+  scrollContent: {
+    paddingHorizontal: 20,
     paddingBottom: 32,
   },
   handle: {
@@ -409,6 +428,12 @@ const createStyles = (VestroColors: AppColors) => StyleSheet.create({
   },
   priceSuffix: {
     marginLeft: 4,
+    fontFamily: VestroFonts.serifMedium,
+    fontSize: 15,
+    color: VestroColors.muted,
+  },
+  pricePrefix: {
+    marginRight: 2,
     fontFamily: VestroFonts.serifMedium,
     fontSize: 15,
     color: VestroColors.muted,

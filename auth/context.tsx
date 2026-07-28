@@ -7,6 +7,7 @@ import { supabase } from '@/lib/supabase';
 type AuthContextValue = {
   isSignedIn: boolean;
   isLoading: boolean;
+  firstName: string | undefined;
   continueWithApple: () => Promise<void>;
   signOut: () => Promise<void>;
 };
@@ -63,9 +64,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     await supabase.auth.signOut();
   }
 
+  const firstName = session?.user.user_metadata?.given_name as string | undefined;
+
   return (
     <AuthContext.Provider
-      value={{ isSignedIn: session !== null, isLoading, continueWithApple, signOut }}
+      value={{ isSignedIn: session !== null, isLoading, firstName, continueWithApple, signOut }}
     >
       {children}
     </AuthContext.Provider>

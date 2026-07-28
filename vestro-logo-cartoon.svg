@@ -1,0 +1,55 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 1000">
+  <rect width="1000" height="1000" fill="#F3E4C8"/>
+
+  <!-- floor -->
+  <line x1="80" y1="830" x2="920" y2="830" stroke="#2B1F33" stroke-width="6" stroke-linecap="round"/>
+
+  <!-- left: rail + hanger + jacket + sweater -->
+  <g>
+    <line x1="140" y1="260" x2="400" y2="260" stroke="#2B1F33" stroke-width="10" stroke-linecap="round"/>
+    <circle cx="140" cy="260" r="7" fill="#2B1F33"/>
+    <circle cx="400" cy="260" r="7" fill="#2B1F33"/>
+
+    <path d="M270,262 Q270,282 258,292" fill="none" stroke="#2B1F33" stroke-width="7" stroke-linecap="round"/>
+    <path d="M235,292 L305,292 L270,315 Z" fill="none" stroke="#2B1F33" stroke-width="7" stroke-linejoin="round"/>
+
+    <path d="M193,308 L245,300 L270,332 L295,300 L347,308 L365,420 L332,600 L338,622 L202,622 L208,600 L175,420 Z"
+          fill="#3B2A46" stroke="#2B1F33" stroke-width="8" stroke-linejoin="round"/>
+    <path d="M245,300 L270,400 L295,300" fill="none" stroke="#2B1F33" stroke-width="5" stroke-linejoin="round"/>
+    <circle cx="270" cy="470" r="9" fill="#F3E4C8" stroke="#2B1F33" stroke-width="4"/>
+    <circle cx="270" cy="520" r="9" fill="#F3E4C8" stroke="#2B1F33" stroke-width="4"/>
+
+    <rect x="170" y="700" width="170" height="55" rx="14" fill="#3B2A46" stroke="#2B1F33" stroke-width="7"/>
+    <rect x="182" y="648" width="146" height="55" rx="14" fill="#FBF3E4" stroke="#2B1F33" stroke-width="7"/>
+    <path d="M225,648 Q255,628 285,648" fill="none" stroke="#2B1F33" stroke-width="5"/>
+  </g>
+
+  <!-- center: arched mirror -->
+  <g>
+    <path d="M400,830 L400,420 A100,100 0 0 1 600,420 L600,830 Z"
+          fill="#FBF3E4" stroke="#2B1F33" stroke-width="12" stroke-linejoin="round"/>
+    <path d="M420,810 L420,432 A80,80 0 0 1 580,432 L580,810 Z"
+          fill="#FDF9EF" stroke="#2B1F33" stroke-width="4"/>
+    <line x1="548" y1="465" x2="500" y2="600" stroke="#FBF3E4" stroke-width="18" stroke-linecap="round" opacity="0.7"/>
+
+    <text x="500" y="540" text-anchor="middle" font-family="Arial, 'Helvetica Neue', sans-serif" font-weight="800" font-size="86" fill="#2B1F33">VE</text>
+    <text x="500" y="628" text-anchor="middle" font-family="Arial, 'Helvetica Neue', sans-serif" font-weight="800" font-size="86" fill="#2B1F33">ST</text>
+    <text x="500" y="716" text-anchor="middle" font-family="Arial, 'Helvetica Neue', sans-serif" font-weight="800" font-size="86" fill="#2B1F33">RO</text>
+  </g>
+
+  <!-- right: shelf + hat + bag -->
+  <g>
+    <line x1="620" y1="330" x2="860" y2="330" stroke="#2B1F33" stroke-width="10" stroke-linecap="round"/>
+    <path d="M725,330 L725,362 L757,330 Z" fill="#2B1F33"/>
+
+    <ellipse cx="730" cy="270" rx="55" ry="45" fill="#3B2A46" stroke="#2B1F33" stroke-width="7"/>
+    <ellipse cx="730" cy="300" rx="58" ry="11" fill="#FBF3E4" stroke="#2B1F33" stroke-width="6"/>
+    <ellipse cx="730" cy="312" rx="86" ry="18" fill="#3B2A46" stroke="#2B1F33" stroke-width="7"/>
+
+    <ellipse cx="730" cy="565" rx="70" ry="12" fill="#2B1F33" opacity="0.15"/>
+    <path d="M690,382 Q730,320 770,382" fill="none" stroke="#2B1F33" stroke-width="10" stroke-linecap="round"/>
+    <path d="M660,382 L800,382 L780,442 L680,442 Z" fill="#A9713D" stroke="#2B1F33" stroke-width="7" stroke-linejoin="round"/>
+    <path d="M660,382 L800,382 L790,560 L670,560 Z" fill="#C08A52" stroke="#2B1F33" stroke-width="7" stroke-linejoin="round"/>
+    <rect x="713" y="402" width="34" height="24" rx="5" fill="#FBF3E4" stroke="#2B1F33" stroke-width="5"/>
+  </g>
+</svg>

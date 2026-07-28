@@ -13,16 +13,19 @@ import {
   View,
 } from 'react-native';
 
+import { useAuth } from '@/auth/context';
 import { LanguagePickerModal } from '@/components/language-picker-modal';
-import { CanvasLayout, OutfitCanvas } from '@/components/outfit-canvas';
+import { CANVAS_REFERENCE_SIZE, CanvasLayout, OutfitCanvas, OutfitPreview } from '@/components/outfit-canvas';
+import { SaveOutfitModal } from '@/components/save-outfit-modal';
 import { AppColors, VestroCategories, VestroFonts } from '@/constants/theme';
 import { useI18n } from '@/i18n/context';
 import { LANGUAGES, MONTHS } from '@/i18n/translations';
 import { fetchActiveLook, saveActiveLook } from '@/lib/active-look';
 import { fetchClothingItems } from '@/lib/clothing';
-import { insertOutfit } from '@/lib/outfits';
+import { fetchOutfits, insertOutfit } from '@/lib/outfits';
+import { supabase } from '@/lib/supabase';
 import { useAppTheme } from '@/theme/context';
-import type { ActiveLook, ClothingItem } from '@/types/clothing';
+import type { ActiveLook, ClothingItem, Outfit } from '@/types/clothing';
 import { CurrentWeather, fetchCurrentWeather } from '@/utils/weather';
 
 function dayOfYear(date: Date) {
@@ -31,8 +34,11 @@ function dayOfYear(date: Date) {
   return Math.floor(diff / 86400000);
 }
 
+const RECENT_OUTFIT_PREVIEW_SIZE = 96;
+
 export default function HomeScreen() {
-  const { t, tCategory, language } = useI18n();
+  const { t, tCategory, tPlural, language } = useI18n();
+  const { firstName } = useAuth();
   const { scheme, colors: VestroColors, setScheme } = useAppTheme();
   const styles = useMemo(() => createStyles(VestroColors), [VestroColors]);
   const [clothes, setClothes] = useState<ClothingItem[]>([]);
@@ -40,10 +46,12 @@ export default function HomeScreen() {
   const [selected, setSelected] = useState<Record<string, number[]>>({});
   const [layout, setLayout] = useState<Record<number, CanvasLayout>>({});
   const [activeCategory, setActiveCategory] = useState('Hauts');
-  const [canvasHeight, setCanvasHeight] = useState(0);
+  const [canvasSize, setCanvasSize] = useState({ width: 0, height: 0 });
   const [showPrice, setShowPrice] = useState(false);
   const [weather, setWeather] = useState<CurrentWeather | null>(null);
   const [languagePickerVisible, setLanguagePickerVisible] = useState(false);
+  const [saveModalVisible, setSaveModalVisible] = useState(false);
+  const [recentOutfits, setRecentOutfits] = useState<Outfit[]>([]);
 
   function formatIssueDate(date: Date) {
     const day = date.getDate().toString().padStart(2, '0');
@@ -77,6 +85,21 @@ export default function HomeScreen() {
           const parsedClothes = await fetchClothingItems();
           setClothes(parsedClothes);
 
+          const {
+            data: { user },
+          } = await supabase.auth.getUser();
+          const { data: entitlement } = user
+            ? await supabase
+                .from('premium_entitlements')
+                .select('*')
+                .eq('user_id', user.id)
+                .maybeSingle()
+            : { data: null };
+
+          console.log('[Vestro] Compte connecté:', user);
+          console.log('[Vestro] Abonnement:', entitlement);
+          console.log(`[Vestro] Vêtements (${parsedClothes.length}):`, parsedClothes);
+
           const look: ActiveLook | null = await fetchActiveLook();
 
           if (look) {
@@ -95,6 +118,8 @@ export default function HomeScreen() {
             setSelected(initialSelected);
             setLayout(look.layout ?? {});
           }
+
+          setRecentOutfits(await fetchOutfits());
         } catch (error) {
           Alert.alert(t('common.errorTitle'), String(error instanceof Error ? error.message : error));
         }
@@ -110,9 +135,10 @@ export default function HomeScreen() {
     (item) => (!item.status || item.status === 'owned') && item.available !== false
   );
 
-  const availableCategories: string[] = VestroCategories.filter((category) =>
-    ownedClothes.some((item) => item.category === category)
-  );
+  // Always show every category (not just ones you already own an item in) —
+  // otherwise a category tab can disappear/reappear as you add or remove
+  // items, which reads as items "missing" from the picker.
+  const availableCategories: string[] = [...VestroCategories];
   const currentCategory = availableCategories.includes(activeCategory)
     ? activeCategory
     : availableCategories[0];
@@ -125,6 +151,13 @@ export default function HomeScreen() {
     .map((itemId) => clothes.find((item) => item.id === itemId))
     .filter((item): item is ClothingItem => Boolean(item));
 
+  const recentOutfitsWithItems = recentOutfits.slice(0, 8).map((outfit) => ({
+    outfit,
+    items: outfit.itemIds
+      .map((itemId) => clothes.find((item) => item.id === itemId))
+      .filter((item): item is ClothingItem => Boolean(item)),
+  }));
+
   function toggleSelect(category: string, itemId: number) {
     setSelected((current) => {
       const currentIds = current[category] ?? [];
@@ -136,12 +169,24 @@ export default function HomeScreen() {
     });
   }
 
+  // Merges onto whatever's already saved for this item rather than
+  // replacing it outright — OutfitCanvas can call this with just a z bump
+  // (from tapping/selecting an item, no real position yet) or with just a
+  // position (from an actual drag/resize, which doesn't resend z) and
+  // either one must leave the other field(s) already saved for that item
+  // intact instead of wiping them back to undefined.
   function handleLayoutChange(itemId: number, next: CanvasLayout) {
-    setLayout((current) => ({ ...current, [itemId]: next }));
+    setLayout((current) => ({ ...current, [itemId]: { ...current[itemId], ...next } }));
   }
 
+  // Deriving height from the measured width (rather than also measuring and
+  // using the container's own height) keeps the board's box exactly the
+  // reference proportions on any device, in either orientation — the same
+  // fix as the create-outfit screen.
   function handleCanvasAreaLayout(event: LayoutChangeEvent) {
-    setCanvasHeight(event.nativeEvent.layout.height);
+    const { width } = event.nativeEvent.layout;
+    const height = Math.round((width * CANVAS_REFERENCE_SIZE.height) / CANVAS_REFERENCE_SIZE.width);
+    setCanvasSize({ width, height });
   }
 
   function currentLookPayload() {
@@ -174,27 +219,29 @@ export default function HomeScreen() {
       return;
     }
 
-    Alert.prompt(
-      t('home.outfitNamePrompt'),
-      undefined,
-      async (name) => {
-        if (!name?.trim()) return;
+    setSaveModalVisible(true);
+  }
 
-        try {
-          await insertOutfit({ name: name.trim(), ...currentLookPayload(), showPrice });
-          Alert.alert(t('home.savedTitle'), t('home.savedMessage'));
-        } catch (error) {
-          Alert.alert(t('common.errorTitle'), String(error instanceof Error ? error.message : error));
-        }
-      },
-      'plain-text'
-    );
+  async function confirmSaveOutfit(name: string) {
+    setSaveModalVisible(false);
+
+    try {
+      await insertOutfit({ name, ...currentLookPayload(), showPrice });
+      Alert.alert(t('home.savedTitle'), t('home.savedMessage'));
+    } catch (error) {
+      Alert.alert(t('common.errorTitle'), String(error instanceof Error ? error.message : error));
+    }
   }
 
   const today = new Date();
 
   return (
     <View style={styles.screen}>
+      <ScrollView
+        style={styles.scroll}
+        contentContainerStyle={styles.content}
+        showsVerticalScrollIndicator={false}
+      >
       <View style={styles.topBar}>
         <Text style={styles.logo}>Vestro</Text>
 
@@ -225,7 +272,9 @@ export default function HomeScreen() {
       </View>
 
       <View style={styles.welcomeRow}>
-        <Text style={styles.eyebrow}>{t('home.greeting', { name: 'SAMY' })}</Text>
+        <Text style={styles.eyebrow}>
+          {firstName ? t('home.greeting', { name: firstName.toUpperCase() }) : t('home.greetingNoName')}
+        </Text>
         {weather && (
           <Text style={styles.weatherText}>
             {t(weather.descriptionKey)} · {Math.round(weather.temperature)}°
@@ -235,12 +284,13 @@ export default function HomeScreen() {
       <Text style={styles.title}>{t('home.title')}</Text>
 
       <View style={styles.canvasArea} onLayout={handleCanvasAreaLayout}>
-        {isLoaded && canvasHeight > 0 && (
+        {isLoaded && canvasSize.height > 0 && (
           <OutfitCanvas
             items={selectedItems}
             layout={layout}
             onLayoutChange={handleLayoutChange}
-            height={canvasHeight}
+            width={canvasSize.width}
+            height={canvasSize.height}
             showPrice={showPrice}
           />
         )}
@@ -330,9 +380,60 @@ export default function HomeScreen() {
         </TouchableOpacity>
       </View>
 
+      <View style={styles.recentSection}>
+        <View style={styles.recentHeader}>
+          <Text style={styles.recentTitle}>{t('home.recentOutfitsTitle')}</Text>
+          {recentOutfitsWithItems.length > 0 && (
+            <TouchableOpacity onPress={() => router.push('/tenues')}>
+              <Text style={styles.recentSeeAll}>{t('home.recentOutfitsSeeAll')}</Text>
+            </TouchableOpacity>
+          )}
+        </View>
+
+        {recentOutfitsWithItems.length > 0 ? (
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={styles.recentRow}
+          >
+            {recentOutfitsWithItems.map(({ outfit, items }) => (
+              <TouchableOpacity
+                key={outfit.id}
+                style={styles.recentCard}
+                onPress={() => router.push(`/create-outfit?id=${outfit.id}`)}
+              >
+                <OutfitPreview
+                  items={items}
+                  layout={outfit.layout ?? {}}
+                  size={RECENT_OUTFIT_PREVIEW_SIZE}
+                  showPrice={outfit.showPrice}
+                />
+                <Text style={styles.recentCardName} numberOfLines={1}>
+                  {outfit.name}
+                </Text>
+                <Text style={styles.recentCardMeta}>
+                  {tPlural('outfits.pieceCount', items.length)}
+                </Text>
+              </TouchableOpacity>
+            ))}
+          </ScrollView>
+        ) : (
+          <View style={styles.recentEmpty}>
+            <Text style={styles.recentEmptyText}>{t('home.recentOutfitsEmptyText')}</Text>
+          </View>
+        )}
+      </View>
+      </ScrollView>
+
       <LanguagePickerModal
         visible={languagePickerVisible}
         onClose={() => setLanguagePickerVisible(false)}
+      />
+
+      <SaveOutfitModal
+        visible={saveModalVisible}
+        onConfirm={confirmSaveOutfit}
+        onCancel={() => setSaveModalVisible(false)}
       />
     </View>
   );
@@ -344,7 +445,26 @@ const createStyles = (VestroColors: AppColors) => StyleSheet.create({
     backgroundColor: VestroColors.background,
     paddingTop: 54,
     paddingHorizontal: 20,
-    paddingBottom: 16,
+    paddingBottom: 10,
+  },
+  scroll: {
+    flex: 1,
+  },
+  content: {
+    // flexGrow (not flex) since this is a ScrollView's contentContainerStyle
+    // — it lets the content stretch to fill a short screen without
+    // preventing it from growing taller than the screen and scrolling on a
+    // small phone.
+    flexGrow: 1,
+    paddingBottom: 20,
+    // Otherwise this fills the whole screen width — fine on a phone, but on
+    // a wide iPad it stretches the board, the wear button and every row
+    // into oversized, awkward shapes. Capping it keeps the whole builder a
+    // comfortable, phone-like width and centers it in the extra space
+    // instead, same as the create-outfit screen's board.
+    width: '100%',
+    maxWidth: 480,
+    alignSelf: 'center',
   },
   topBar: {
     flexDirection: 'row',
@@ -383,7 +503,7 @@ const createStyles = (VestroColors: AppColors) => StyleSheet.create({
     textDecorationLine: 'underline',
   },
   welcomeRow: {
-    marginTop: 18,
+    marginTop: 10,
     flexDirection: 'row',
     alignItems: 'baseline',
     justifyContent: 'space-between',
@@ -395,7 +515,7 @@ const createStyles = (VestroColors: AppColors) => StyleSheet.create({
     color: VestroColors.muted,
   },
   title: {
-    marginTop: 2,
+    marginTop: 0,
     fontFamily: VestroFonts.serifSemiBoldItalic,
     fontSize: 26,
     lineHeight: 30,
@@ -407,11 +527,10 @@ const createStyles = (VestroColors: AppColors) => StyleSheet.create({
     color: VestroColors.muted,
   },
   canvasArea: {
-    flex: 1,
-    marginTop: 16,
+    marginTop: 12,
   },
   priceToggleRow: {
-    marginTop: 10,
+    marginTop: 6,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
@@ -424,7 +543,7 @@ const createStyles = (VestroColors: AppColors) => StyleSheet.create({
   categoryTabsScroll: {
     flexGrow: 0,
     flexShrink: 0,
-    marginTop: 14,
+    marginTop: 10,
   },
   categoryTabs: {
     gap: 20,
@@ -454,9 +573,14 @@ const createStyles = (VestroColors: AppColors) => StyleSheet.create({
     color: VestroColors.ink,
   },
   itemRowScroll: {
+    // Fixed height (not just flexGrow/flexShrink: 0) so an empty category's
+    // row doesn't collapse to 0 and hand its space to the canvas below —
+    // that made the board resize as you switched tabs, which could strand
+    // an already-placed item outside the (now smaller) visible canvas.
+    height: 78,
     flexGrow: 0,
     flexShrink: 0,
-    marginTop: 12,
+    marginTop: 8,
   },
   itemRow: {
     gap: 18,
@@ -465,8 +589,8 @@ const createStyles = (VestroColors: AppColors) => StyleSheet.create({
     alignItems: 'center',
   },
   thumbnail: {
-    width: 62,
-    height: 78,
+    width: 54,
+    height: 68,
     alignItems: 'center',
     justifyContent: 'center',
     overflow: 'hidden',
@@ -487,7 +611,7 @@ const createStyles = (VestroColors: AppColors) => StyleSheet.create({
     backgroundColor: VestroColors.ink,
   },
   actions: {
-    marginTop: 16,
+    marginTop: 10,
     alignItems: 'center',
   },
   wearButton: {
@@ -505,13 +629,71 @@ const createStyles = (VestroColors: AppColors) => StyleSheet.create({
     color: VestroColors.buttonText,
   },
   saveLink: {
-    marginTop: 12,
+    marginTop: 8,
   },
   saveLinkText: {
     fontFamily: VestroFonts.serifMediumItalic,
     fontSize: 13,
     color: VestroColors.muted,
     textDecorationLine: 'underline',
+  },
+  recentSection: {
+    marginTop: 28,
+  },
+  recentHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'baseline',
+  },
+  recentTitle: {
+    fontFamily: VestroFonts.serifMedium,
+    fontSize: 16,
+    color: VestroColors.ink,
+  },
+  recentSeeAll: {
+    fontFamily: VestroFonts.sansMedium,
+    fontSize: 11,
+    letterSpacing: 1,
+    textTransform: 'uppercase',
+    color: VestroColors.muted,
+    textDecorationLine: 'underline',
+  },
+  recentRow: {
+    marginTop: 14,
+    gap: 16,
+  },
+  recentEmpty: {
+    marginTop: 14,
+    minHeight: 140,
+    borderWidth: 1,
+    borderStyle: 'dashed',
+    borderColor: VestroColors.border,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 24,
+  },
+  recentEmptyText: {
+    textAlign: 'center',
+    fontFamily: VestroFonts.serifMediumItalic,
+    fontSize: 14,
+    color: VestroColors.muted,
+  },
+  recentCard: {
+    width: RECENT_OUTFIT_PREVIEW_SIZE,
+  },
+  recentCardName: {
+    marginTop: 8,
+    fontFamily: VestroFonts.serifMedium,
+    fontSize: 12,
+    color: VestroColors.ink,
+  },
+  recentCardMeta: {
+    marginTop: 2,
+    fontFamily: VestroFonts.sans,
+    fontSize: 9,
+    letterSpacing: 0.5,
+    textTransform: 'uppercase',
+    color: VestroColors.muted,
   },
 });
 

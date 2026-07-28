@@ -1,0 +1,70 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 800" fill="none">
+  <rect width="800" height="800" fill="#FAF6EF"/>
+
+  <!-- wall panels -->
+  <g stroke="#2E2440" stroke-width="2" opacity="0.55">
+    <rect x="110" y="140" width="150" height="480" rx="2"/>
+    <rect x="125" y="155" width="120" height="450" rx="2"/>
+    <rect x="270" y="140" width="260" height="480" rx="2"/>
+    <rect x="285" y="155" width="230" height="450" rx="2"/>
+    <rect x="540" y="140" width="150" height="480" rx="2"/>
+    <rect x="555" y="155" width="120" height="450" rx="2"/>
+  </g>
+
+  <!-- floor -->
+  <g stroke="#2E2440" stroke-width="2.5">
+    <line x1="90" y1="620" x2="710" y2="620"/>
+  </g>
+  <g stroke="#2E2440" stroke-width="1.5" opacity="0.5">
+    <line x1="150" y1="640" x2="190" y2="620"/>
+    <line x1="230" y1="640" x2="270" y2="620"/>
+    <line x1="530" y1="640" x2="570" y2="620"/>
+    <line x1="610" y1="640" x2="650" y2="620"/>
+  </g>
+
+  <!-- left: rail + hanger + jacket -->
+  <g stroke="#2E2440" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+    <line x1="140" y1="210" x2="260" y2="210"/>
+    <line x1="180" y1="210" x2="180" y2="620"/>
+
+    <path d="M200,213 q0,-14 10,-16" stroke-width="2.5"/>
+    <path d="M188,232 L212,232 L200,244 Z"/>
+
+    <path d="M178,246 L222,246 L232,260 L214,254 L214,300 L214,420 L186,420 L186,300 L186,254 L168,260 Z"/>
+
+    <line x1="150" y1="470" x2="240" y2="470"/>
+    <path d="M172,470 L172,450 L208,450 L208,470" stroke-width="2.2"/>
+    <rect x="182" y="428" width="16" height="22" rx="2" stroke-width="2.2"/>
+  </g>
+
+  <!-- center: arched mirror with "Vestro" -->
+  <g stroke="#2E2440" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M330,606 L330,300 A70,70 0 0 1 470,300 L470,606 Z"/>
+  </g>
+  <g stroke="#2E2440" stroke-width="1.8" opacity="0.65">
+    <path d="M344,592 L344,304 A56,56 0 0 1 456,304 L456,592"/>
+    <line x1="425" y1="270" x2="405" y2="320"/>
+    <line x1="440" y1="285" x2="420" y2="335"/>
+  </g>
+  <text x="400" y="472" text-anchor="middle" font-family="Georgia, 'Times New Roman', serif" font-style="italic" font-size="48" fill="#2E2440">Vestro</text>
+
+  <!-- right: shelving + hat + scarf + bag -->
+  <g stroke="#2E2440" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+    <line x1="540" y1="200" x2="540" y2="620"/>
+    <line x1="680" y1="200" x2="680" y2="620"/>
+    <line x1="540" y1="260" x2="680" y2="260"/>
+    <line x1="540" y1="420" x2="680" y2="420"/>
+
+    <ellipse cx="575" cy="246" rx="24" ry="7"/>
+    <path d="M559,244 Q575,216 591,244" stroke-width="2.5"/>
+
+    <rect x="618" y="230" width="34" height="10" rx="3" stroke-width="2.2"/>
+    <rect x="622" y="240" width="26" height="10" rx="3" stroke-width="2.2"/>
+
+    <rect x="556" y="392" width="48" height="12" rx="2" stroke-width="2.2"/>
+    <rect x="562" y="404" width="36" height="12" rx="2" stroke-width="2.2"/>
+
+    <path d="M600,560 L648,560 L654,608 L594,608 Z"/>
+    <path d="M610,560 Q624,536 638,560" stroke-width="2.5"/>
+  </g>
+</svg>

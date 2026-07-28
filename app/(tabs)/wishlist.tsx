@@ -8,6 +8,7 @@ import {
   StyleSheet,
   Text,
   TouchableOpacity,
+  useWindowDimensions,
   View,
 } from 'react-native';
 
@@ -27,12 +28,21 @@ import {
 import { showPhotoTips } from '@/lib/photo-tips';
 import { useAppTheme } from '@/theme/context';
 import type { ClothingItem } from '@/types/clothing';
+import { formatPrice } from '@/utils/currency';
 import { analyzeClothingPhoto, removeBackground, type PhotoIssue } from '@/utils/remove-background';
+
+// Same fix as the Dressing tab: fit as many comfortable, phone-sized cards
+// as the actual screen width allows, instead of always doing 2 columns
+// stretched to fill whatever width is available (huge cards on a wide iPad).
+const CONTENT_PADDING = 20;
+const GRID_GAP = 20;
+const TARGET_CARD_WIDTH = 170;
 
 export default function WishlistScreen() {
   const { t, tCategory, language } = useI18n();
   const { colors: VestroColors } = useAppTheme();
   const styles = useMemo(() => createStyles(VestroColors), [VestroColors]);
+  const { width: windowWidth } = useWindowDimensions();
   const [clothes, setClothes] = useState<ClothingItem[]>([]);
   const [isLoaded, setIsLoaded] = useState(false);
   const [processingImageUri, setProcessingImageUri] = useState<string | undefined>(undefined);
@@ -104,6 +114,13 @@ export default function WishlistScreen() {
     selectedCategory === 'Tout'
       ? wishlistItems
       : wishlistItems.filter((item) => item.category === selectedCategory);
+
+  const availableWidth = windowWidth - CONTENT_PADDING * 2;
+  const numColumns = Math.max(
+    2,
+    Math.floor((availableWidth + GRID_GAP) / (TARGET_CARD_WIDTH + GRID_GAP))
+  );
+  const cardWidth = (availableWidth - GRID_GAP * (numColumns - 1)) / numColumns;
 
   async function updateItem(id: number, patch: Parameters<typeof updateClothingItem>[1]) {
     setClothes((currentClothes) =>
@@ -279,7 +296,7 @@ export default function WishlistScreen() {
         <View style={styles.grid}>
           {filteredWishlistItems.map((item) => (
             <TouchableOpacity
-              style={styles.card}
+              style={[styles.card, { width: cardWidth }]}
               key={item.id}
               onPress={() => openItem(item)}
             >
@@ -298,9 +315,7 @@ export default function WishlistScreen() {
               <View style={styles.itemMetaRow}>
                 <Text style={styles.category}>{tCategory(item.category)}</Text>
                 {item.price !== undefined && (
-                  <Text style={styles.price}>
-                    {item.price.toFixed(2).replace('.', ',')} €
-                  </Text>
+                  <Text style={styles.price}>{formatPrice(item.price, language)}</Text>
                 )}
               </View>
             </TouchableOpacity>
@@ -478,12 +493,9 @@ const createStyles = (VestroColors: AppColors) => StyleSheet.create({
     marginTop: 32,
     flexDirection: 'row',
     flexWrap: 'wrap',
-    justifyContent: 'space-between',
-    rowGap: 20,
+    gap: GRID_GAP,
   },
-  card: {
-    width: '48%',
-  },
+  card: {},
   imageWrap: {
     height: 172,
     backgroundColor: VestroColors.surface,

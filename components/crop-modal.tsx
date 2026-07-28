@@ -17,6 +17,7 @@ import Animated, { type SharedValue, useAnimatedStyle, useSharedValue } from 're
 import { AppColors, VestroFonts } from '@/constants/theme';
 import { useI18n } from '@/i18n/context';
 import { useAppTheme } from '@/theme/context';
+import { uriToDataUri } from '@/utils/remove-background';
 
 const MIN_CROP_SIZE = 56;
 const MAX_VIEWPORT_HEIGHT = 440;
@@ -238,19 +239,49 @@ export function CropModal({
   const { colors: VestroColors } = useAppTheme();
   const styles = useMemo(() => createStyles(VestroColors), [VestroColors]);
   const { width: windowWidth } = useWindowDimensions();
+  const [resolvedUri, setResolvedUri] = useState<string | null>(null);
   const [naturalSize, setNaturalSize] = useState<{ width: number; height: number } | null>(null);
   const [loadError, setLoadError] = useState(false);
 
   useEffect(() => {
     if (!visible || !imageUri) return;
 
+    let cancelled = false;
+    setResolvedUri(null);
     setNaturalSize(null);
     setLoadError(false);
-    Image.getSize(
-      imageUri,
-      (width, height) => setNaturalSize({ width, height }),
-      () => setLoadError(true)
-    );
+
+    // expo-image-manipulator's manipulate() only accepts a local file or a
+    // base64 data URI, never a remote URL — but an already-saved item's
+    // photo is a Supabase Storage signed https:// URL, which it can't fetch.
+    // The photo still displayed fine here (plain <Image> handles remote
+    // URLs), so the crop looked like it should work right up until hitting
+    // "confirm", where the native crop call had nothing valid to read.
+    // Resolving to a data URI upfront makes both a fresh local photo and an
+    // already-uploaded one equally croppable.
+    async function resolve() {
+      try {
+        const uri = imageUri!.startsWith('http') ? await uriToDataUri(imageUri!) : imageUri!;
+        if (cancelled) return;
+        setResolvedUri(uri);
+        Image.getSize(
+          uri,
+          (width, height) => {
+            if (!cancelled) setNaturalSize({ width, height });
+          },
+          () => {
+            if (!cancelled) setLoadError(true);
+          }
+        );
+      } catch {
+        if (!cancelled) setLoadError(true);
+      }
+    }
+
+    resolve();
+    return () => {
+      cancelled = true;
+    };
   }, [visible, imageUri]);
 
   if (!visible || !imageUri) return null;
@@ -269,12 +300,14 @@ export function CropModal({
         <View style={styles.card}>
           {loadError && <Text style={styles.hint}>{t('common.errorTitle')}</Text>}
 
-          {!loadError && !naturalSize && <ActivityIndicator color={VestroColors.ink} />}
+          {!loadError && !(resolvedUri && naturalSize) && (
+            <ActivityIndicator color={VestroColors.ink} />
+          )}
 
-          {!loadError && naturalSize && (
+          {!loadError && resolvedUri && naturalSize && (
             <CropSurface
-              key={imageUri}
-              imageUri={imageUri}
+              key={resolvedUri}
+              imageUri={resolvedUri}
               displayWidth={displayWidth}
               displayHeight={displayHeight}
               naturalWidth={naturalSize.width}

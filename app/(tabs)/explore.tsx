@@ -8,6 +8,7 @@ import {
   StyleSheet,
   Text,
   TouchableOpacity,
+  useWindowDimensions,
   View,
 } from 'react-native';
 
@@ -22,12 +23,19 @@ import { deleteClothingItem, fetchClothingItems, updateClothingItem } from '@/li
 import { getIsPremium } from '@/lib/premium';
 import { useAppTheme } from '@/theme/context';
 import type { ClothingItem } from '@/types/clothing';
+import { formatPrice } from '@/utils/currency';
 import { removeBackground } from '@/utils/remove-background';
 
+// Content horizontal padding (styles.content) and inter-card gap — kept as
+// constants so the column-count math below stays readable.
+const CONTENT_PADDING = 20;
+const GRID_GAP = 16;
+
 export default function DressingScreen() {
-  const { t, tCategory } = useI18n();
+  const { t, tCategory, language } = useI18n();
   const { colors: VestroColors } = useAppTheme();
   const styles = useMemo(() => createStyles(VestroColors), [VestroColors]);
+  const { width: windowWidth } = useWindowDimensions();
   const [clothes, setClothes] = useState<ClothingItem[]>([]);
 const [selectedCategory, setSelectedCategory] = useState('Tout');
 const [showAvailableOnly, setShowAvailableOnly] = useState(false);
@@ -151,6 +159,18 @@ async function handleOptionsPhotoChange() {
 
   const filters = ['Tout', ...VestroCategories];
 
+  // The 2/3 toggle sets a *target* card size (phone-sized cards), and we fit
+  // as many of that size as the actual screen width allows — so a wide iPad
+  // gets more columns of the same comfortable card size instead of 2-3 huge
+  // stretched-out cards.
+  const availableWidth = windowWidth - CONTENT_PADDING * 2;
+  const targetCardWidth = columns === 2 ? 170 : 112;
+  const numColumns = Math.max(
+    columns,
+    Math.floor((availableWidth + GRID_GAP) / (targetCardWidth + GRID_GAP))
+  );
+  const cardWidth = (availableWidth - GRID_GAP * (numColumns - 1)) / numColumns;
+
   return (
     <View style={styles.screen}>
     <ScrollView contentContainerStyle={styles.content}>
@@ -255,7 +275,7 @@ async function handleOptionsPhotoChange() {
       <View style={styles.grid}>
         {filteredClothes.map((item) => (
           <TouchableOpacity
-            style={[styles.card, { width: columns === 2 ? '48%' : '31%' }]}
+            style={[styles.card, { width: cardWidth }]}
             key={item.id}
             onPress={() => openClothingOptions(item)}
           >
@@ -263,9 +283,10 @@ async function handleOptionsPhotoChange() {
               {item.image ? (
                 <Image
                   source={{ uri: item.image }}
+                  resizeMode="contain"
                   style={[
                     styles.clothingImage,
-                    { height: columns === 2 ? 172 : 108 },
+                    { width: cardWidth, height: cardWidth },
                     item.available === false && styles.unavailableVisual,
                   ]}
                 />
@@ -273,7 +294,7 @@ async function handleOptionsPhotoChange() {
                 <View
                   style={[
                     styles.imagePlaceholder,
-                    { height: columns === 2 ? 172 : 108 },
+                    { width: cardWidth, height: cardWidth },
                     { backgroundColor: item.color ?? VestroColors.tints[item.category] },
                     item.available === false && styles.unavailableVisual,
                   ]}
@@ -298,9 +319,7 @@ async function handleOptionsPhotoChange() {
             <View style={styles.itemMetaRow}>
               {columns === 2 && <Text style={styles.category}>{tCategory(item.category)}</Text>}
               {item.price !== undefined && (
-                <Text style={styles.price}>
-                  {item.price.toFixed(2).replace('.', ',')} €
-                </Text>
+                <Text style={styles.price}>{formatPrice(item.price, language)}</Text>
               )}
             </View>
             {item.available === false && item.unavailableReason && (
@@ -519,18 +538,11 @@ const createStyles = (VestroColors: AppColors) => StyleSheet.create({
     marginTop: 24,
     flexDirection: 'row',
     flexWrap: 'wrap',
-    justifyContent: 'space-between',
-    rowGap: 20,
+    gap: 16,
   },
-  card: {
-    width: '48%',
-  },
-  imagePlaceholder: {
-    height: 172,
-  },
+  card: {},
+  imagePlaceholder: {},
   clothingImage: {
-    width: '100%',
-    height: 172,
     backgroundColor: VestroColors.surface,
   },
   itemName: {

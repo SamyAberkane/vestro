@@ -83,17 +83,22 @@ $$;
 
 grant execute on function public.has_active_premium() to authenticated;
 
-create policy "clothing_items_select_own" on public.clothing_items for select using (auth.uid() = user_id and public.has_active_premium());
+-- Reading your own data is always allowed, even without an active
+-- subscription, so a lapsed/never-paying user never loses access to
+-- clothing/outfits they already have. Only creating, editing or deleting
+-- (the actual cost driver — new photos go through the paid Gemini call)
+-- still requires an active, server-verified subscription.
+create policy "clothing_items_select_own" on public.clothing_items for select using (auth.uid() = user_id);
 create policy "clothing_items_insert_own" on public.clothing_items for insert with check (auth.uid() = user_id and public.has_active_premium());
 create policy "clothing_items_update_own" on public.clothing_items for update using (auth.uid() = user_id and public.has_active_premium());
 create policy "clothing_items_delete_own" on public.clothing_items for delete using (auth.uid() = user_id and public.has_active_premium());
 
-create policy "outfits_select_own" on public.outfits for select using (auth.uid() = user_id and public.has_active_premium());
+create policy "outfits_select_own" on public.outfits for select using (auth.uid() = user_id);
 create policy "outfits_insert_own" on public.outfits for insert with check (auth.uid() = user_id and public.has_active_premium());
 create policy "outfits_update_own" on public.outfits for update using (auth.uid() = user_id and public.has_active_premium());
 create policy "outfits_delete_own" on public.outfits for delete using (auth.uid() = user_id and public.has_active_premium());
 
-create policy "active_looks_select_own" on public.active_looks for select using (auth.uid() = user_id and public.has_active_premium());
+create policy "active_looks_select_own" on public.active_looks for select using (auth.uid() = user_id);
 create policy "active_looks_insert_own" on public.active_looks for insert with check (auth.uid() = user_id and public.has_active_premium());
 create policy "active_looks_update_own" on public.active_looks for update using (auth.uid() = user_id and public.has_active_premium());
 create policy "active_looks_delete_own" on public.active_looks for delete using (auth.uid() = user_id and public.has_active_premium());
@@ -104,7 +109,7 @@ values ('clothing-images', 'clothing-images', false)
 on conflict (id) do nothing;
 
 create policy "clothing_images_select_own" on storage.objects for select
-  using (bucket_id = 'clothing-images' and (storage.foldername(name))[1] = auth.uid()::text and public.has_active_premium());
+  using (bucket_id = 'clothing-images' and (storage.foldername(name))[1] = auth.uid()::text);
 
 create policy "clothing_images_insert_own" on storage.objects for insert
   with check (bucket_id = 'clothing-images' and (storage.foldername(name))[1] = auth.uid()::text and public.has_active_premium());

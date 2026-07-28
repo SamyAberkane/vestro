@@ -78,7 +78,7 @@ function blobToDataUri(blob: Blob): Promise<string> {
   });
 }
 
-async function uriToDataUri(uri: string): Promise<string> {
+export async function uriToDataUri(uri: string): Promise<string> {
   const blob = await (await fetch(uri)).blob();
   return blobToDataUri(blob);
 }
@@ -288,6 +288,12 @@ export type ClothingAnalysis = {
  * short name, category and palette color guessed from the photo — used when
  * bulk-adding clothes so the user doesn't have to fill those in by hand. Any
  * field the model doesn't confidently return is just left undefined.
+ *
+ * The model occasionally drops the name or category on an otherwise-usable
+ * photo (it's juggling the image redraw and the classification in the same
+ * pass) — when that happens we retry the call once rather than immediately
+ * falling back to a generic "Vêtement N" name, since a second pass usually
+ * gets a complete answer.
  */
 export async function analyzeClothingPhoto(
   imageUri: string,
@@ -301,5 +307,22 @@ export async function analyzeClothingPhoto(
 
   if (outcome.status !== 'success') return { image: outcome.image };
 
-  return { image: outcome.image, ...parseClothingMetadata(outcome.text, tag) };
+  const metadata = parseClothingMetadata(outcome.text, tag);
+
+  if (metadata.usable !== false && (!metadata.name || !metadata.category)) {
+    console.warn(`${tag} nom ou catégorie manquant, nouvelle tentative…`);
+    const retryOutcome = await callEditClothingPhoto(sourceDataUri, 'metadata', language, tag);
+    if (retryOutcome.status === 'success') {
+      const retryMetadata = parseClothingMetadata(retryOutcome.text, tag);
+      return {
+        image: retryOutcome.image,
+        ...metadata,
+        name: metadata.name ?? retryMetadata.name,
+        category: metadata.category ?? retryMetadata.category,
+        color: metadata.color ?? retryMetadata.color,
+      };
+    }
+  }
+
+  return { image: outcome.image, ...metadata };
 }

@@ -3,6 +3,7 @@ import { useEffect, useMemo, useState } from 'react';
 import {
   Alert,
   Image,
+  LayoutChangeEvent,
   ScrollView,
   StyleSheet,
   Switch,
@@ -13,7 +14,7 @@ import {
 } from 'react-native';
 
 import { ConfirmModal } from '@/components/confirm-modal';
-import { CanvasLayout, OutfitCanvas } from '@/components/outfit-canvas';
+import { CANVAS_REFERENCE_SIZE, CanvasLayout, OutfitCanvas } from '@/components/outfit-canvas';
 import { AppColors, VestroCategories, VestroFonts } from '@/constants/theme';
 import { useI18n } from '@/i18n/context';
 import { fetchClothingItems } from '@/lib/clothing';
@@ -38,17 +39,25 @@ export default function CreateOutfitScreen() {
   const [showPrice, setShowPrice] = useState(false);
   const [confirmDeleteVisible, setConfirmDeleteVisible] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
+  const [confirmResetVisible, setConfirmResetVisible] = useState(false);
+  // Item positions are stored as fractions of the canvas size (see
+  // outfit-canvas.tsx), so they always fill whatever box is rendered here —
+  // this screen scrolls, so there's room to be generous and use the same
+  // proportions as the original canvas design (taller than it is wide).
+  const [canvasSize, setCanvasSize] = useState({ width: 0, height: 0 });
+
+  function handleCanvasWrapLayout(event: LayoutChangeEvent) {
+    const { width } = event.nativeEvent.layout;
+    const height = Math.round((width * CANVAS_REFERENCE_SIZE.height) / CANVAS_REFERENCE_SIZE.width);
+    setCanvasSize({ width, height });
+  }
   const [activeCategory, setActiveCategory] = useState('Hauts');
 
   useEffect(() => {
     async function loadData() {
       try {
         const parsedClothes = await fetchClothingItems();
-        setClothes(
-          parsedClothes.filter(
-            (item) => (!item.status || item.status === 'owned') && item.available !== false
-          )
-        );
+        setClothes(parsedClothes);
 
         if (id) {
           const outfits = await fetchOutfits();
@@ -93,8 +102,23 @@ export default function CreateOutfitScreen() {
     });
   }
 
+  // Merges onto whatever's already saved for this item rather than
+  // replacing it outright — OutfitCanvas can call this with just a z bump
+  // (from tapping/selecting an item, no real position yet) or with just a
+  // position (from an actual drag/resize, which doesn't resend z) and
+  // either one must leave the other field(s) already saved for that item
+  // intact instead of wiping them back to undefined.
   function handleLayoutChange(itemId: number, next: CanvasLayout) {
-    setLayout((current) => ({ ...current, [itemId]: next }));
+    setLayout((current) => ({ ...current, [itemId]: { ...current[itemId], ...next } }));
+  }
+
+  // Clears every saved position so all items fall back to the automatic,
+  // overlap-free grid (see autoGridLayout in outfit-canvas.tsx) — the way
+  // out for outfits whose positions were saved before that grid existed,
+  // which otherwise have no way to self-correct back to a clean layout.
+  function resetLayout() {
+    setLayout({});
+    setConfirmResetVisible(false);
   }
 
   async function saveOutfit() {
@@ -129,13 +153,21 @@ export default function CreateOutfitScreen() {
     router.back();
   }
 
+  // Items already in the outfit stay visible on the board even if they've
+  // since become unavailable or moved to the wishlist (clothes, above, is
+  // deliberately unfiltered so it always matches what the Tenues preview
+  // resolves outfit.itemIds against) — but only owned, available items
+  // should be offered as new additions here.
+  const pickableClothes = clothes.filter(
+    (item) => (!item.status || item.status === 'owned') && item.available !== false
+  );
   const availableCategories = VestroCategories.filter((category) =>
-    clothes.some((item) => item.category === category)
+    pickableClothes.some((item) => item.category === category)
   );
   const currentCategory = availableCategories.includes(activeCategory as (typeof VestroCategories)[number])
     ? activeCategory
     : availableCategories[0];
-  const currentCategoryItems = clothes.filter((item) => item.category === currentCategory);
+  const currentCategoryItems = pickableClothes.filter((item) => item.category === currentCategory);
 
   async function confirmDelete() {
     if (!id) return;
@@ -177,16 +209,20 @@ export default function CreateOutfitScreen() {
         />
 
         {isLoaded && (
-          <View style={styles.canvasWrap}>
-            <OutfitCanvas
-              items={Object.values(selected)
-                .flat()
-                .map((itemId) => clothes.find((item) => item.id === itemId))
-                .filter((item): item is ClothingItem => Boolean(item))}
-              layout={layout}
-              onLayoutChange={handleLayoutChange}
-              showPrice={showPrice}
-            />
+          <View style={styles.canvasWrap} onLayout={handleCanvasWrapLayout}>
+            {canvasSize.width > 0 && (
+              <OutfitCanvas
+                items={Object.values(selected)
+                  .flat()
+                  .map((itemId) => clothes.find((item) => item.id === itemId))
+                  .filter((item): item is ClothingItem => Boolean(item))}
+                layout={layout}
+                onLayoutChange={handleLayoutChange}
+                width={canvasSize.width}
+                height={canvasSize.height}
+                showPrice={showPrice}
+              />
+            )}
 
             <View style={styles.priceToggleRow}>
               <Text style={styles.priceToggleLabel}>{t('createOutfit.showPrice')}</Text>
@@ -198,6 +234,15 @@ export default function CreateOutfitScreen() {
                 ios_backgroundColor={VestroColors.border}
               />
             </View>
+
+            {Object.keys(layout).length > 0 && (
+              <TouchableOpacity
+                style={styles.resetLayoutButton}
+                onPress={() => setConfirmResetVisible(true)}
+              >
+                <Text style={styles.resetLayoutText}>{t('createOutfit.resetLayout')}</Text>
+              </TouchableOpacity>
+            )}
           </View>
         )}
 
@@ -283,6 +328,16 @@ export default function CreateOutfitScreen() {
         onConfirm={confirmDelete}
         onCancel={() => setConfirmDeleteVisible(false)}
       />
+
+      <ConfirmModal
+        visible={confirmResetVisible}
+        title={t('createOutfit.resetLayoutConfirmTitle')}
+        message={t('createOutfit.resetLayoutConfirmMessage')}
+        confirmLabel={t('createOutfit.resetLayout')}
+        cancelLabel={t('common.cancel')}
+        onConfirm={resetLayout}
+        onCancel={() => setConfirmResetVisible(false)}
+      />
     </View>
   );
 }
@@ -296,6 +351,13 @@ const createStyles = (VestroColors: AppColors) => StyleSheet.create({
     paddingTop: 65,
     paddingHorizontal: 20,
     paddingBottom: 60,
+    // Otherwise every row here (header, name input, category tabs, item
+    // thumbnails) stretches the full width of a wide iPad screen — capping
+    // the whole column, not just the board below, keeps the entire editor a
+    // comfortable, phone-like width and centers it in the extra space.
+    width: '100%',
+    maxWidth: 480,
+    alignSelf: 'center',
   },
   header: {
     flexDirection: 'row',
@@ -344,6 +406,18 @@ const createStyles = (VestroColors: AppColors) => StyleSheet.create({
     fontFamily: VestroFonts.sansMedium,
     fontSize: 13,
     color: VestroColors.ink,
+  },
+  resetLayoutButton: {
+    marginTop: 14,
+    alignSelf: 'flex-start',
+  },
+  resetLayoutText: {
+    fontFamily: VestroFonts.sansMedium,
+    fontSize: 11,
+    letterSpacing: 1,
+    textTransform: 'uppercase',
+    color: VestroColors.muted,
+    textDecorationLine: 'underline',
   },
   categoryTabsScroll: {
     flexGrow: 0,

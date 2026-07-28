@@ -44,6 +44,7 @@ const tints: Record<string, string> = {
   Bijoux: '#EDE0C8',
   Sacs: '#D7C9BB',
   'Couvre-chefs': '#DCD6E8',
+  Lunettes: '#CFE0E8',
 };
 
 export const VestroColorsLight = {
@@ -92,6 +93,7 @@ export const VestroCategories = [
   'Bijoux',
   'Sacs',
   'Couvre-chefs',
+  'Lunettes',
 ] as const;
 
 export const VestroPalette: { label: string; hex: string }[] = [

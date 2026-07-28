@@ -9,10 +9,38 @@ import Animated, {
 
 import { VestroColors, VestroFonts } from '@/constants/theme';
 import { useI18n } from '@/i18n/context';
+import type { Language } from '@/i18n/translations';
+import { formatPrice as formatCurrency } from '@/utils/currency';
 
 const SELECTION_BLUE = '#2F7CF6';
 
-export type CanvasLayout = { x: number; y: number; scale: number };
+// x/y are fractions (0..1) of the canvas' usable travel range (canvas size
+// minus the item's own footprint), NOT pixels — so "all the way at the
+// bottom" (y: 1) always renders at the bottom of whatever canvas shows it,
+// whether that's the compact home-screen builder, the outfit list preview,
+// or the full-screen editor, regardless of their differing pixel sizes.
+// z is the stacking order (higher = more in front); items without one stack
+// by their natural array order.
+//
+// x/y/scale are all optional because an item can have a saved z (stacking
+// order) WITHOUT ever having been manually positioned — see bringToFront in
+// OutfitCanvas below, which merely selecting or touching an item goes
+// through. Position is only ever written by an actual drag/resize (see
+// DraggableItem's commit()). Writing x/y/scale from a mere tap would freeze
+// that item's *current auto-grid position* (see autoGridLayout) as if it
+// were deliberate — and since the auto-grid depends on how many items are
+// in the outfit, an item frozen early (before the rest were added) can end
+// up "stuck" at a position that no longer matches the live grid the other,
+// still-unfrozen items are computed against, landing them on top of each
+// other.
+export type CanvasLayout = { x?: number; y?: number; scale?: number; z?: number };
+
+// A layout that's actually usable to place an item on the board — every
+// field guaranteed present, unlike the optional, "maybe just a z" CanvasLayout
+// above. Only ever produced by autoGridLayout or by normalizing a saved
+// entry that has real x/y (see normalizeStoredLayout) — never something a
+// mere tap/select can create.
+type ResolvedItemLayout = { x: number; y: number; scale: number };
 
 export type CanvasItem = {
   id: number;
@@ -22,44 +50,216 @@ export type CanvasItem = {
   price?: number;
 };
 
-function formatPrice(items: CanvasItem[]): string | null {
+function formatPrice(items: CanvasItem[], language: Language): string | null {
   const total = items.reduce((sum, item) => sum + (item.price ?? 0), 0);
   const hasPrice = items.some((item) => item.price !== undefined);
   if (!hasPrice) return null;
-  return `${total.toFixed(2).replace('.', ',')} €`;
+  return formatCurrency(total, language);
 }
-
-const DEFAULT_POSITIONS: Record<string, { x: number; y: number }> = {
-  Hauts: { x: 30, y: 10 },
-  Bas: { x: 30, y: 150 },
-  Chaussures: { x: 30, y: 290 },
-  Accessoires: { x: 190, y: 10 },
-  Robes: { x: 190, y: 150 },
-  Sacs: { x: 190, y: 290 },
-  'Couvre-chefs': { x: 110, y: 10 },
-  Bijoux: { x: 110, y: 80 },
-  Montres: { x: 110, y: 220 },
-};
 
 const ITEM_SIZE = 130;
 const MIN_SCALE = 0.5;
 const MAX_SCALE = 2.5;
+// Comfortably above any item's zIndex (items.length + 1 at most).
+const PRICE_TAG_Z_INDEX = 10000;
 
 export const CANVAS_REFERENCE_SIZE = { width: 340, height: 420 };
 
-function resolveLayout(items: CanvasItem[], layout: Record<number, CanvasLayout>) {
-  const categoryCounts: Record<string, number> = {};
+// Every layout computation below — travel, positions, clamping, the auto
+// grid — happens in this one fixed 340x420 coordinate system, always. There
+// is no "editor size" vs "preview size" version of this math to keep in
+// sync: the interactive board (OutfitCanvas) and the read-only thumbnail
+// (OutfitPreview) both lay out items in this same fixed space and then
+// apply a single `transform: scale(...)` to whatever box they're actually
+// asked to render into (see displayScale in OutfitCanvas, `scale` in
+// OutfitPreview). Two parallel formulas that both have to independently
+// arrive at the same answer is exactly the kind of thing that quietly
+// drifts apart — one shared coordinate system can't disagree with itself.
+const TRAVEL = {
+  x: Math.max(CANVAS_REFERENCE_SIZE.width - ITEM_SIZE, 1),
+  y: Math.max(CANVAS_REFERENCE_SIZE.height - ITEM_SIZE, 1),
+};
 
-  return items.map((item) => {
-    const base = DEFAULT_POSITIONS[item.category] ?? { x: 20, y: 20 };
-    const stackIndex = categoryCounts[item.category] ?? 0;
-    categoryCounts[item.category] = stackIndex + 1;
+function toPixels(fractionLayout: ResolvedItemLayout): ResolvedItemLayout {
+  return { ...fractionLayout, x: fractionLayout.x * TRAVEL.x, y: fractionLayout.y * TRAVEL.y };
+}
 
-    const fallback = { x: base.x + stackIndex * 18, y: base.y + stackIndex * 18 };
-    const itemLayout = layout[item.id] ?? { ...fallback, scale: 1 };
+function toFraction(pixelLayout: ResolvedItemLayout): ResolvedItemLayout {
+  return { ...pixelLayout, x: pixelLayout.x / TRAVEL.x, y: pixelLayout.y / TRAVEL.y };
+}
 
-    return { item, itemLayout };
+// A scale that's zero, negative, or NaN (e.g. written by some earlier,
+// since-fixed bug, or hand-edited data) would otherwise render an item at
+// literally invisible size with no way for the user to know it's still
+// there. Only applied to *saved* layouts below — autoGridLayout's own scale
+// legitimately goes as low as AUTO_GRID_MIN_SCALE (below the interactive
+// MIN_SCALE) to keep many items from overlapping, and must not be clamped
+// back up here.
+function sanitizeScale(scale: number | undefined): number {
+  if (scale === undefined || !Number.isFinite(scale) || scale <= 0) return 1;
+  return Math.min(Math.max(scale, MIN_SCALE), MAX_SCALE);
+}
+
+function normalizeStoredLayout(raw: { x: number; y: number; scale?: number }): ResolvedItemLayout {
+  return { x: raw.x, y: raw.y, scale: sanitizeScale(raw.scale) };
+}
+
+// Layouts saved before positions became 0..1 fractions of the canvas stored
+// raw pixels against the old fixed 340x420 reference box instead — those are
+// unmistakably outside the ~0..1 range fractions live in. Only items that
+// had actually been dragged got one of these entries; every other item in
+// that same outfit relied on an old fixed per-category slot that no longer
+// exists in code at all. So a legacy entry can't just be rescaled in place:
+// doing that would place the one item that happens to have a saved entry at
+// its old (rescaled) spot while every untouched neighbor lands wherever the
+// *current* per-item auto-grid puts it — two positioning schemes that know
+// nothing about each other, landing arbitrary items on top of each other.
+// The only self-consistent option once any item shows this shape is to
+// treat the *whole outfit's* saved layout as unusable and let every item in
+// it fall back to the auto-grid together (same as hitting "Réinitialiser la
+// disposition") — not just the one legacy-shaped entry.
+function looksLegacy(raw: { x: number; y: number }): boolean {
+  return Math.abs(raw.x) > 1.5 || Math.abs(raw.y) > 1.5;
+}
+
+// A saved fraction can still fall outside 0..1 (dragged past an edge, or a
+// stack offset pushing past 1) — clamping in pixel space keeps at least half
+// the item on-screen no matter what, so nothing can ever be invisible.
+const CLAMP_MARGIN = ITEM_SIZE / 2;
+const CLAMP_MAX_X = Math.max(CANVAS_REFERENCE_SIZE.width - ITEM_SIZE + CLAMP_MARGIN, -CLAMP_MARGIN);
+const CLAMP_MAX_Y = Math.max(CANVAS_REFERENCE_SIZE.height - ITEM_SIZE + CLAMP_MARGIN, -CLAMP_MARGIN);
+
+function clampToCanvas(itemLayout: ResolvedItemLayout): ResolvedItemLayout {
+  return {
+    ...itemLayout,
+    x: Math.min(Math.max(itemLayout.x, -CLAMP_MARGIN), CLAMP_MAX_X),
+    y: Math.min(Math.max(itemLayout.y, -CLAMP_MARGIN), CLAMP_MAX_Y),
+  };
+}
+
+const AUTO_GRID_MAX_SCALE = 1;
+const AUTO_GRID_MIN_SCALE = 0.4;
+
+// Arranges items that haven't been manually positioned into a grid that's
+// guaranteed not to overlap, sized to fit however many items there are.
+// A fixed per-category lookup used to place items instead, but at this item
+// size two adjacent columns already overlap at full scale (an item is ~62%
+// of the travel range wide — three columns structurally can't fit side by
+// side without overlapping), so any outfit with two items in neighboring
+// category slots, or several items sharing one category, rendered as a
+// near-total overlap by default instead of a clean, glanceable layout.
+function autoGridLayout(index: number, total: number): ResolvedItemLayout {
+  const cols = Math.max(1, Math.ceil(Math.sqrt(total)));
+  const rows = Math.max(1, Math.ceil(total / cols));
+
+  const itemFractionX = ITEM_SIZE / TRAVEL.x;
+  const itemFractionY = ITEM_SIZE / TRAVEL.y;
+
+  const scaleX = cols > 1 ? 1 / (cols - 1) / itemFractionX : AUTO_GRID_MAX_SCALE;
+  const scaleY = rows > 1 ? 1 / (rows - 1) / itemFractionY : AUTO_GRID_MAX_SCALE;
+  const scale = Math.max(AUTO_GRID_MIN_SCALE, Math.min(AUTO_GRID_MAX_SCALE, scaleX, scaleY));
+
+  const col = index % cols;
+  const row = Math.floor(index / cols);
+
+  return {
+    x: cols > 1 ? col / (cols - 1) : 0.5,
+    y: rows > 1 ? row / (rows - 1) : 0.5,
+    scale,
+  };
+}
+
+// x/y going through Math.min/Math.max survives out-of-range values (that's
+// what clampToCanvas is for) but NOT non-finite ones — Math.min(NaN, n) is
+// NaN, which then makes the item's transform NaN and the item silently
+// renders nothing, with no error and no way to tell it's still "there".
+// A usable saved layout must have real numbers to build on; anything else
+// (leftover from some earlier, since-fixed bug, or corrupted some other
+// way) is treated as if nothing were saved at all, same as a brand new item.
+function isUsableSaved(raw: CanvasLayout): raw is CanvasLayout & { x: number; y: number } {
+  return Number.isFinite(raw.x) && Number.isFinite(raw.y);
+}
+
+function computeResolved(items: CanvasItem[], effectiveLayout: Record<number, CanvasLayout>) {
+  return items.map((item, index) => {
+    const saved = effectiveLayout[item.id];
+    const itemLayout =
+      saved && isUsableSaved(saved)
+        ? clampToCanvas(toPixels(normalizeStoredLayout(saved)))
+        : clampToCanvas(toPixels(autoGridLayout(index, items.length)));
+    // z comes straight from the saved entry, never from the resolved
+    // position — an item can have a saved z (from being tapped/dragged to
+    // the front) with no saved x/y/scale at all, still using the live
+    // auto-grid for its position (see CanvasLayout's comment above).
+    const zIndex = saved?.z ?? index;
+
+    return { item, itemLayout, zIndex };
   });
+}
+
+// An outfit saved by an earlier build that still had the "selecting an item
+// freezes its current position" bug (now fixed — see bringToFront in
+// OutfitCanvas) already has bad x/y/scale written to it, and there's no way
+// to tell that data apart from a genuinely deliberate manual placement after
+// the fact — both are just numbers in range. What both bad cases actually
+// look like once rendered, though, is items sitting substantially on top of
+// each other (a boot completely hidden under another item, a scarf covering
+// half the board) — real, deliberate layering (a belt's edge over a dress)
+// doesn't usually swallow most of another piece. So rather than trying to
+// spot bad *data*, this spots the bad *result*: if any two items end up
+// covering most of one another, the saved layout as a whole is treated as
+// broken, the same as a detected legacy entry.
+const SEVERE_OVERLAP_RATIO = 0.5;
+
+function itemBounds(itemLayout: ResolvedItemLayout) {
+  const size = ITEM_SIZE * itemLayout.scale;
+  const inset = (ITEM_SIZE - size) / 2;
+  return {
+    left: itemLayout.x + inset,
+    top: itemLayout.y + inset,
+    right: itemLayout.x + inset + size,
+    bottom: itemLayout.y + inset + size,
+  };
+}
+
+function overlapRatio(a: ReturnType<typeof itemBounds>, b: ReturnType<typeof itemBounds>): number {
+  const overlapWidth = Math.min(a.right, b.right) - Math.max(a.left, b.left);
+  const overlapHeight = Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top);
+  if (overlapWidth <= 0 || overlapHeight <= 0) return 0;
+
+  const overlapArea = overlapWidth * overlapHeight;
+  const areaA = (a.right - a.left) * (a.bottom - a.top);
+  const areaB = (b.right - b.left) * (b.bottom - b.top);
+  const smallerArea = Math.min(areaA, areaB);
+
+  return smallerArea > 0 ? overlapArea / smallerArea : 0;
+}
+
+function hasSevereOverlap(resolved: ReturnType<typeof computeResolved>): boolean {
+  const bounds = resolved.map(({ itemLayout }) => itemBounds(itemLayout));
+
+  for (let i = 0; i < bounds.length; i++) {
+    for (let j = i + 1; j < bounds.length; j++) {
+      if (overlapRatio(bounds[i], bounds[j]) > SEVERE_OVERLAP_RATIO) return true;
+    }
+  }
+
+  return false;
+}
+
+function resolveLayout(items: CanvasItem[], layout: Record<number, CanvasLayout>) {
+  const hasLegacyEntry = Object.values(layout).some(
+    (raw) => isUsableSaved(raw) && looksLegacy(raw)
+  );
+  let effectiveLayout = hasLegacyEntry ? {} : layout;
+  let resolved = computeResolved(items, effectiveLayout);
+
+  if (Object.keys(effectiveLayout).length > 0 && hasSevereOverlap(resolved)) {
+    effectiveLayout = {};
+    resolved = computeResolved(items, effectiveLayout);
+  }
+
+  return resolved;
 }
 
 const CORNERS = ['topLeft', 'topRight', 'bottomLeft', 'bottomRight'] as const;
@@ -76,11 +276,13 @@ function ResizeHandle({
   corner,
   savedScale,
   currentScale,
+  displayScale,
   onCommit,
 }: {
   corner: Corner;
   savedScale: { value: number };
   currentScale: { value: number };
+  displayScale: number;
   onCommit: () => void;
 }) {
   const sign = CORNER_SIGN[corner];
@@ -88,8 +290,13 @@ function ResizeHandle({
   const resize = Gesture.Pan()
     .onUpdate((event) => {
       'worklet';
+      // The handle is dragged in real screen pixels, but the item it's
+      // resizing lives in the fixed reference space and is only ever made
+      // to look bigger or smaller on screen via displayScale — so a drag of
+      // the same *visual* distance should always produce the same size
+      // change, regardless of how zoomed in or out this particular board is.
       const reach = event.translationX * sign.x + event.translationY * sign.y;
-      const factor = 1 + reach / ITEM_SIZE;
+      const factor = 1 + reach / (ITEM_SIZE * displayScale);
       currentScale.value = Math.min(Math.max(savedScale.value * factor, MIN_SCALE), MAX_SCALE);
     })
     .onEnd(() => {
@@ -108,24 +315,44 @@ function DraggableItem({
   item,
   layout,
   selected,
+  zIndex,
+  displayScale,
   onChange,
   onSelect,
+  onTouch,
 }: {
   item: CanvasItem;
-  layout: CanvasLayout;
+  layout: ResolvedItemLayout;
   selected: boolean;
-  onChange: (next: CanvasLayout) => void;
+  zIndex: number;
+  displayScale: number;
+  onChange: (next: ResolvedItemLayout) => void;
   onSelect: () => void;
+  onTouch: () => void;
 }) {
-  const translateX = useSharedValue(layout.x);
-  const translateY = useSharedValue(layout.y);
+  // translateX/Y track the item's actual on-screen pixel position (logical
+  // position × displayScale), not the fixed reference-space position — the
+  // item is rendered at its real on-screen size below (ITEM_SIZE *
+  // displayScale) rather than rendered small and stretched up by a
+  // container transform, so the image is decoded at the resolution it's
+  // actually shown at instead of coming out blurry on any board that isn't
+  // exactly the reference size (which is almost every board).
+  const translateX = useSharedValue(layout.x * displayScale);
+  const translateY = useSharedValue(layout.y * displayScale);
   const savedScale = useSharedValue(layout.scale);
   const currentScale = useSharedValue(layout.scale);
+  const itemSize = ITEM_SIZE * displayScale;
 
   function commit() {
+    // Stacking order (z) isn't part of this — onTouch already bumped it to
+    // the front at the start of this gesture via a separate call, and
+    // OutfitCanvas merges that into the saved entry rather than this one
+    // replacing it wholesale (see handleLayoutChange). translateX/Y are
+    // on-screen pixels — convert back to the fixed reference space (what
+    // onChange/toFraction expect) before saving.
     onChange({
-      x: translateX.value,
-      y: translateY.value,
+      x: translateX.value / displayScale,
+      y: translateY.value / displayScale,
       scale: currentScale.value,
     });
   }
@@ -135,6 +362,10 @@ function DraggableItem({
   });
 
   const pan = Gesture.Pan()
+    .onStart(() => {
+      'worklet';
+      runOnJS(onTouch)();
+    })
     .onChange((event) => {
       translateX.value += event.changeX;
       translateY.value += event.changeY;
@@ -144,6 +375,10 @@ function DraggableItem({
     });
 
   const pinch = Gesture.Pinch()
+    .onStart(() => {
+      'worklet';
+      runOnJS(onTouch)();
+    })
     .onChange((event) => {
       currentScale.value = Math.min(
         Math.max(savedScale.value * event.scale, MIN_SCALE),
@@ -167,7 +402,9 @@ function DraggableItem({
 
   return (
     <GestureDetector gesture={gesture}>
-      <Animated.View style={[styles.item, animatedStyle]}>
+      <Animated.View
+        style={[styles.item, { width: itemSize, height: itemSize, zIndex }, animatedStyle]}
+      >
         {item.image ? (
           <Image source={{ uri: item.image }} style={styles.image} resizeMode="contain" />
         ) : (
@@ -188,6 +425,7 @@ function DraggableItem({
                 corner={corner}
                 savedScale={savedScale}
                 currentScale={currentScale}
+                displayScale={displayScale}
                 onCommit={commit}
               />
             ))}
@@ -202,33 +440,83 @@ export function OutfitCanvas({
   items,
   layout,
   onLayoutChange,
-  height = 420,
+  width = CANVAS_REFERENCE_SIZE.width,
+  height = CANVAS_REFERENCE_SIZE.height,
   showPrice = false,
 }: {
   items: CanvasItem[];
   layout: Record<number, CanvasLayout>;
   onLayoutChange: (itemId: number, next: CanvasLayout) => void;
+  width?: number;
   height?: number;
   showPrice?: boolean;
 }) {
-  const { t } = useI18n();
+  const { t, language } = useI18n();
   const [selectedId, setSelectedId] = useState<number | null>(null);
-  const priceLabel = showPrice ? formatPrice(items) : null;
+  const priceLabel = showPrice ? formatPrice(items, language) : null;
+  // Uniform scale that fits the fixed 340x420 reference board inside
+  // whatever width x height box this screen actually has room for — the
+  // same formula OutfitPreview below uses. Using width alone (as this used
+  // to) silently assumed the box was always exactly reference-shaped; the
+  // home screen's board area is a flexible, remaining-space region whose
+  // real aspect ratio drifts from that assumption a lot on a wide, short
+  // tablet layout, and items positioned toward the bottom of the reference
+  // space (e.g. shoes, since bottom rows fill last) would end up translated
+  // below the box's actual pixel height — clipped invisible by this view's
+  // overflow: hidden, with no error and no way to tell they were still
+  // "there". Deriving the scale from both dimensions, and sizing the
+  // rendered frame itself to that result (boardWidth/boardHeight below)
+  // rather than to the full available box, makes the editor agree with the
+  // preview pixel-for-pixel no matter the box's shape, instead of
+  // stretching content into — or leaving it dwarfed by — a box it was
+  // never actually sized for.
+  const displayScale = Math.min(
+    width / CANVAS_REFERENCE_SIZE.width,
+    height / CANVAS_REFERENCE_SIZE.height
+  );
+  const boardWidth = CANVAS_REFERENCE_SIZE.width * displayScale;
+  const boardHeight = CANVAS_REFERENCE_SIZE.height * displayScale;
+
+  // Persisted (not just in-memory) stacking order: bumping z on every touch
+  // and saving it through onLayoutChange means the front/back arrangement
+  // survives leaving the screen — a previous version only tracked this in
+  // local state, so it silently reset every time the outfit was reopened.
+  // Deliberately writes *only* z, never the item's resolved x/y/scale —
+  // merely tapping/selecting an item must not freeze whatever position the
+  // live auto-grid currently happens to have it at (see CanvasLayout's
+  // comment above for why that goes wrong as soon as the outfit changes
+  // size). onLayoutChange merges this onto the item's existing saved entry
+  // rather than replacing it, so any real saved position survives too.
+  function bringToFront(itemId: number) {
+    onLayoutChange(itemId, { z: Date.now() });
+  }
 
   return (
-    <View style={[styles.canvas, { height }]}>
+    // The visible bordered frame is sized to the letterboxed board itself
+    // (boardWidth/boardHeight), not the full width/height this screen has
+    // available — otherwise, whenever the available box is taller than the
+    // reference proportions need (e.g. the home screen's board area, which
+    // just gets whatever vertical space is left over), the frame stretched
+    // to fill all of it while the actual board sat small inside, reading as
+    // one big, mostly-empty card instead of a board the right shape for its
+    // contents.
+    <View style={[styles.canvas, { width: boardWidth, height: boardHeight }]}>
       {items.length === 0 && <Text style={styles.emptyText}>{t('canvas.empty')}</Text>}
 
-      {resolveLayout(items, layout).map(({ item, itemLayout }) => (
+      {resolveLayout(items, layout).map(({ item, itemLayout, zIndex }) => (
         <DraggableItem
           key={item.id}
           item={item}
           layout={itemLayout}
           selected={selectedId === item.id}
-          onChange={(next) => onLayoutChange(item.id, next)}
-          onSelect={() =>
-            setSelectedId((current) => (current === item.id ? null : item.id))
-          }
+          zIndex={zIndex}
+          displayScale={displayScale}
+          onChange={(next) => onLayoutChange(item.id, toFraction(next))}
+          onSelect={() => {
+            setSelectedId((current) => (current === item.id ? null : item.id));
+            bringToFront(item.id);
+          }}
+          onTouch={() => bringToFront(item.id)}
         />
       ))}
 
@@ -252,14 +540,15 @@ export function OutfitPreview({
   size?: number;
   showPrice?: boolean;
 }) {
+  const { language } = useI18n();
   const scale = Math.min(
     size / CANVAS_REFERENCE_SIZE.width,
     size / CANVAS_REFERENCE_SIZE.height
   );
-  const priceLabel = showPrice ? formatPrice(items) : null;
+  const priceLabel = showPrice ? formatPrice(items, language) : null;
 
   return (
-    <View style={[styles.canvas, styles.previewOuter, { width: size, height: size }]}>
+    <View style={[styles.canvas, { width: size, height: size }]}>
       <View
         style={[
           styles.previewInner,
@@ -270,12 +559,13 @@ export function OutfitPreview({
           },
         ]}
       >
-        {resolveLayout(items, layout).map(({ item, itemLayout }) => (
+        {resolveLayout(items, layout).map(({ item, itemLayout, zIndex }) => (
           <View
             key={item.id}
             style={[
               styles.item,
               {
+                zIndex,
                 transform: [
                   { translateX: itemLayout.x },
                   { translateY: itemLayout.y },
@@ -313,8 +603,12 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: VestroColors.frame,
     overflow: 'hidden',
-  },
-  previewOuter: {
+    // Only matters for OutfitPreview below, whose outer box is a fixed
+    // size x size square while its inner board (previewInner) is rendered
+    // smaller and letterboxed inside it — centering here is what puts that
+    // board in the middle of the square instead of pinned to a corner.
+    // OutfitCanvas's own box is already sized to its board exactly (see
+    // boardWidth/boardHeight there), so this is a no-op for it.
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -383,6 +677,9 @@ const styles = StyleSheet.create({
   },
   priceTag: {
     position: 'absolute',
+    // Always above every draggable item, no matter which one was last
+    // brought to front (see DraggableItem's zIndex in OutfitCanvas).
+    zIndex: PRICE_TAG_Z_INDEX,
     right: 14,
     bottom: 14,
     backgroundColor: VestroColors.surface,
@@ -400,6 +697,7 @@ const styles = StyleSheet.create({
   },
   priceTagCompact: {
     position: 'absolute',
+    zIndex: PRICE_TAG_Z_INDEX,
     right: 8,
     bottom: 8,
     backgroundColor: VestroColors.surface,
