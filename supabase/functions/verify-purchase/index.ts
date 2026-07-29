@@ -44,7 +44,14 @@ function base64urlDecodeToJson<T>(segment: string): T {
 }
 
 function pemToArrayBuffer(pem: string): ArrayBuffer {
-  const base64 = pem.replace(/-----BEGIN PRIVATE KEY-----/, '').replace(/-----END PRIVATE KEY-----/, '').replace(/\s+/g, '');
+  // Tolerates secrets pasted with literal "\n" escapes instead of real
+  // newlines (a common mistake when setting a multi-line .p8 key as an
+  // env var), in addition to actual whitespace.
+  const base64 = pem
+    .replace(/-----BEGIN PRIVATE KEY-----/, '')
+    .replace(/-----END PRIVATE KEY-----/, '')
+    .replace(/\\n/g, '')
+    .replace(/\s+/g, '');
   const binary = atob(base64);
   const bytes = new Uint8Array(binary.length);
   for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
@@ -164,6 +171,7 @@ Deno.serve(async (req) => {
 
     return json({ isPremium: isActive, expiresAt });
   } catch (error) {
+    console.error('[verify-purchase]', error);
     const message = error instanceof Error ? error.message : String(error);
     return json({ message }, 500);
   }

@@ -120,26 +120,12 @@ create policy "clothing_images_update_own" on storage.objects for update
 create policy "clothing_images_delete_own" on storage.objects for delete
   using (bucket_id = 'clothing-images' and (storage.foldername(name))[1] = auth.uid()::text and public.has_active_premium());
 
--- Self-service account deletion (Apple guideline 5.1.1(v)): lets a signed-in
--- user delete their own account from the app, with no admin/service-role key
--- involved. Safe because `auth.uid()` is derived server-side from the
--- caller's verified JWT and can't be spoofed to target another user.
--- `clothing_items` / `outfits` / `active_looks` cascade-delete automatically
--- via their `on delete cascade` FK to auth.users above; only the storage
--- bucket needs explicit cleanup first since it isn't FK-linked.
-create or replace function public.delete_own_account()
-returns void
-language plpgsql
-security definer
-set search_path = public
-as $$
-begin
-  delete from storage.objects
-    where bucket_id = 'clothing-images'
-      and (storage.foldername(name))[1] = auth.uid()::text;
-
-  delete from auth.users where id = auth.uid();
-end;
-$$;
-
-grant execute on function public.delete_own_account() to authenticated;
+-- Self-service account deletion (Apple guideline 5.1.1(v)) lives in the
+-- `delete-account` edge function, not here: Supabase blocks direct SQL
+-- deletes on storage.objects (to avoid orphaning the underlying files),
+-- so it has to go through the Storage API + Auth Admin API with the
+-- service-role key instead of a plain security-definer SQL function.
+-- `clothing_items` / `outfits` / `active_looks` / `premium_entitlements`
+-- still cascade-delete automatically via their `on delete cascade` FK to
+-- auth.users above.
+drop function if exists public.delete_own_account();
