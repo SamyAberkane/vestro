@@ -1,6 +1,7 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import Constants, { ExecutionEnvironment } from 'expo-constants';
 import { type EmitterSubscription, Platform } from 'react-native';
+import { FunctionsHttpError } from '@supabase/supabase-js';
 import {
   endConnection,
   finishTransaction,
@@ -48,7 +49,16 @@ async function verifyPurchase(transactionId: string): Promise<boolean> {
     message?: string;
   }>('verify-purchase', { body: { transactionId } });
 
-  if (error) throw error;
+  if (error) {
+    // supabase-js's own error.message is just the generic "Edge Function
+    // returned a non-2xx status code" — the actual reason the function
+    // threw is in the response body, reachable only via error.context.
+    if (error instanceof FunctionsHttpError) {
+      const body: { message?: string } | null = await error.context.json().catch(() => null);
+      throw new Error(body?.message ?? error.message);
+    }
+    throw error;
+  }
   if (!data) throw new Error('Réponse vide de verify-purchase');
   return data.isPremium;
 }
