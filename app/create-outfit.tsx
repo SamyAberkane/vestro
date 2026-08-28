@@ -1,8 +1,6 @@
 import { router, useLocalSearchParams } from 'expo-router';
 import { useEffect, useMemo, useState } from 'react';
 import {
-  Alert,
-  Image,
   LayoutChangeEvent,
   ScrollView,
   StyleSheet,
@@ -10,19 +8,28 @@ import {
   Text,
   TextInput,
   TouchableOpacity,
+  useWindowDimensions,
   View,
 } from 'react-native';
 
 import { ConfirmModal } from '@/components/confirm-modal';
 import { CANVAS_REFERENCE_SIZE, CanvasLayout, OutfitCanvas } from '@/components/outfit-canvas';
+import { StickerImage } from '@/components/sticker-image';
 import { AppColors, VestroCategories, VestroFonts } from '@/constants/theme';
 import { useI18n } from '@/i18n/context';
+import { saveActiveLook } from '@/lib/active-look';
+import { alert } from '@/lib/alert';
 import { fetchClothingItems } from '@/lib/clothing';
 import { deleteOutfit, fetchOutfits, insertOutfit, updateOutfit } from '@/lib/outfits';
 import { useAppTheme } from '@/theme/context';
 import type { ClothingItem } from '@/types/clothing';
 
 const DESTRUCTIVE_RED = '#DC2626';
+// Mirrors styles.content's paddingHorizontal and maxWidth below — shared so
+// the fallback-width calc in the canvas resize effect can never silently
+// drift out of sync with what that style actually renders.
+const CONTENT_HORIZONTAL_PADDING = 20;
+const CONTENT_MAX_WIDTH = 480;
 
 export default function CreateOutfitScreen() {
   const { t, tCategory } = useI18n();
@@ -39,18 +46,50 @@ export default function CreateOutfitScreen() {
   const [showPrice, setShowPrice] = useState(false);
   const [confirmDeleteVisible, setConfirmDeleteVisible] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
-  const [confirmResetVisible, setConfirmResetVisible] = useState(false);
+  const [confirmClearVisible, setConfirmClearVisible] = useState(false);
   // Item positions are stored as fractions of the canvas size (see
   // outfit-canvas.tsx), so they always fill whatever box is rendered here —
   // this screen scrolls, so there's room to be generous and use the same
   // proportions as the original canvas design (taller than it is wide).
   const [canvasSize, setCanvasSize] = useState({ width: 0, height: 0 });
+  const { width: windowWidth, height: windowHeight } = useWindowDimensions();
 
   function handleCanvasWrapLayout(event: LayoutChangeEvent) {
     const { width } = event.nativeEvent.layout;
     const height = Math.round((width * CANVAS_REFERENCE_SIZE.height) / CANVAS_REFERENCE_SIZE.width);
     setCanvasSize({ width, height });
   }
+
+  // onLayout normally refires whenever this view's own size changes, but
+  // iPad multitasking (Split View, Slide Over) and rotation don't always
+  // trigger that reliably — when it doesn't, the board keeps rendering at
+  // its old size while its own overflow: hidden frame is now sized (via
+  // width/height props below) for a window that no longer exists, cutting
+  // off whatever no longer fits, most often its bottom. Blanking canvasSize
+  // on every window resize forces the canvas to stay hidden until a fresh
+  // onLayout actually lands, instead of ever risking staying stuck at a
+  // stale size.
+  useEffect(() => {
+    setCanvasSize({ width: 0, height: 0 });
+
+    // Belt-and-suspenders for the exact failure mode this effect exists to
+    // work around: if onLayout genuinely never refires after this resize,
+    // don't leave the board hidden forever either — after a brief grace
+    // period for the real onLayout to land first, fall back to a width
+    // computed straight from the window itself (same formula the actual
+    // layout resolves to, given content's fixed padding above).
+    const fallback = setTimeout(() => {
+      setCanvasSize((current) => {
+        if (current.width > 0) return current;
+        const width = Math.min(windowWidth, CONTENT_MAX_WIDTH) - CONTENT_HORIZONTAL_PADDING * 2;
+        const height = Math.round((width * CANVAS_REFERENCE_SIZE.height) / CANVAS_REFERENCE_SIZE.width);
+        return { width, height };
+      });
+    }, 400);
+
+    return () => clearTimeout(fallback);
+  }, [windowWidth, windowHeight]);
+
   const [activeCategory, setActiveCategory] = useState('Hauts');
 
   useEffect(() => {
@@ -82,7 +121,7 @@ export default function CreateOutfitScreen() {
           }
         }
       } catch (error) {
-        Alert.alert(t('common.errorTitle'), String(error instanceof Error ? error.message : error));
+        alert(t('common.errorTitle'), String(error instanceof Error ? error.message : error));
       }
 
       setIsLoaded(true);
@@ -116,28 +155,39 @@ export default function CreateOutfitScreen() {
   // overlap-free grid (see autoGridLayout in outfit-canvas.tsx) — the way
   // out for outfits whose positions were saved before that grid existed,
   // which otherwise have no way to self-correct back to a clean layout.
-  function resetLayout() {
-    setLayout({});
-    setConfirmResetVisible(false);
+  // Empties the board. Leaves `layout` alone so an item added back later
+  // still remembers where it used to sit — this never repositions anything
+  // on its own, only removes what the user explicitly asked to clear.
+  function clearBoard() {
+    setSelected({});
+    setConfirmClearVisible(false);
   }
 
-  async function saveOutfit() {
+  // Shared by saveOutfit and wearThisOutfit below — both need the same
+  // itemIds/layout pair, trimmed to just the items still actually selected
+  // (a saved layout can carry stale entries for items removed since).
+  function selectedLookPayload() {
     const itemIds = Object.values(selected).flat();
-
-    if (!name.trim()) {
-      Alert.alert(t('createOutfit.missingNameTitle'), t('createOutfit.missingNameMessage'));
-      return;
-    }
-
-    if (itemIds.length === 0) {
-      Alert.alert(t('common.emptyOutfitTitle'), t('common.emptyOutfitMessage'));
-      return;
-    }
-
     const itemIdSet = new Set(itemIds);
     const savedLayout = Object.fromEntries(
       Object.entries(layout).filter(([itemId]) => itemIdSet.has(Number(itemId)))
     );
+
+    return { itemIds, layout: savedLayout };
+  }
+
+  async function saveOutfit() {
+    const { itemIds, layout: savedLayout } = selectedLookPayload();
+
+    if (!name.trim()) {
+      alert(t('createOutfit.missingNameTitle'), t('createOutfit.missingNameMessage'));
+      return;
+    }
+
+    if (itemIds.length === 0) {
+      alert(t('common.emptyOutfitTitle'), t('common.emptyOutfitMessage'));
+      return;
+    }
 
     try {
       if (id) {
@@ -146,11 +196,33 @@ export default function CreateOutfitScreen() {
         await insertOutfit({ name: name.trim(), itemIds, layout: savedLayout, showPrice });
       }
     } catch (error) {
-      Alert.alert(t('common.errorTitle'), String(error instanceof Error ? error.message : error));
+      alert(t('common.errorTitle'), String(error instanceof Error ? error.message : error));
       return;
     }
 
     router.back();
+  }
+
+  // Sets this outfit as today's active look and jumps to the home screen so
+  // the effect is immediately visible there — the home screen picks this up
+  // via subscribeToActiveLookChanged (see lib/active-look.ts) rather than
+  // needing a focus-triggered refetch that would otherwise risk clobbering
+  // whatever the user has in progress there.
+  async function wearThisOutfit() {
+    const { itemIds, layout: savedLayout } = selectedLookPayload();
+
+    if (itemIds.length === 0) {
+      alert(t('common.emptyOutfitTitle'), t('common.emptyOutfitMessage'));
+      return;
+    }
+
+    try {
+      await saveActiveLook({ itemIds, layout: savedLayout });
+      alert(t('home.wornTitle'), t('home.wornMessage'));
+      router.push('/(tabs)');
+    } catch (error) {
+      alert(t('common.errorTitle'), String(error instanceof Error ? error.message : error));
+    }
   }
 
   // Items already in the outfit stay visible on the board even if they've
@@ -179,7 +251,7 @@ export default function CreateOutfitScreen() {
     } catch (error) {
       setIsDeleting(false);
       setConfirmDeleteVisible(false);
-      Alert.alert(t('common.errorTitle'), String(error instanceof Error ? error.message : error));
+      alert(t('common.errorTitle'), String(error instanceof Error ? error.message : error));
     }
   }
 
@@ -224,6 +296,12 @@ export default function CreateOutfitScreen() {
               />
             )}
 
+            {isEditing && (
+              <TouchableOpacity style={styles.wearOutfitButton} onPress={wearThisOutfit}>
+                <Text style={styles.wearOutfitButtonText}>{t('createOutfit.wearThisOutfit')}</Text>
+              </TouchableOpacity>
+            )}
+
             <View style={styles.priceToggleRow}>
               <Text style={styles.priceToggleLabel}>{t('createOutfit.showPrice')}</Text>
               <Switch
@@ -235,13 +313,12 @@ export default function CreateOutfitScreen() {
               />
             </View>
 
-            {Object.keys(layout).length > 0 && (
-              <TouchableOpacity
-                style={styles.resetLayoutButton}
-                onPress={() => setConfirmResetVisible(true)}
-              >
-                <Text style={styles.resetLayoutText}>{t('createOutfit.resetLayout')}</Text>
-              </TouchableOpacity>
+            {Object.values(selected).flat().length > 0 && (
+              <View style={styles.boardLinksRow}>
+                <TouchableOpacity onPress={() => setConfirmClearVisible(true)}>
+                  <Text style={styles.boardLinkText}>{t('createOutfit.clearBoard')}</Text>
+                </TouchableOpacity>
+              </View>
             )}
           </View>
         )}
@@ -290,11 +367,7 @@ export default function CreateOutfitScreen() {
                     onPress={() => toggleSelect(currentCategory, item.id)}
                   >
                     {item.image && (
-                      <Image
-                        source={{ uri: item.image }}
-                        style={styles.thumbnailImage}
-                        resizeMode="cover"
-                      />
+                      <StickerImage uri={item.image} containerStyle={styles.thumbnailImage} resizeMode="cover" />
                     )}
                     {isSelected && (
                       <View style={styles.checkBadge}>
@@ -330,13 +403,14 @@ export default function CreateOutfitScreen() {
       />
 
       <ConfirmModal
-        visible={confirmResetVisible}
-        title={t('createOutfit.resetLayoutConfirmTitle')}
-        message={t('createOutfit.resetLayoutConfirmMessage')}
-        confirmLabel={t('createOutfit.resetLayout')}
+        visible={confirmClearVisible}
+        title={t('createOutfit.clearBoardConfirmTitle')}
+        message={t('createOutfit.clearBoardConfirmMessage')}
+        confirmLabel={t('createOutfit.clearBoard')}
         cancelLabel={t('common.cancel')}
-        onConfirm={resetLayout}
-        onCancel={() => setConfirmResetVisible(false)}
+        destructive
+        onConfirm={clearBoard}
+        onCancel={() => setConfirmClearVisible(false)}
       />
     </View>
   );
@@ -349,14 +423,14 @@ const createStyles = (VestroColors: AppColors) => StyleSheet.create({
   },
   content: {
     paddingTop: 65,
-    paddingHorizontal: 20,
+    paddingHorizontal: CONTENT_HORIZONTAL_PADDING,
     paddingBottom: 60,
     // Otherwise every row here (header, name input, category tabs, item
     // thumbnails) stretches the full width of a wide iPad screen — capping
     // the whole column, not just the board below, keeps the entire editor a
     // comfortable, phone-like width and centers it in the extra space.
     width: '100%',
-    maxWidth: 480,
+    maxWidth: CONTENT_MAX_WIDTH,
     alignSelf: 'center',
   },
   header: {
@@ -396,6 +470,20 @@ const createStyles = (VestroColors: AppColors) => StyleSheet.create({
   canvasWrap: {
     marginTop: 24,
   },
+  wearOutfitButton: {
+    marginTop: 14,
+    height: 46,
+    backgroundColor: VestroColors.ink,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  wearOutfitButtonText: {
+    fontFamily: VestroFonts.sansSemiBold,
+    fontSize: 11,
+    letterSpacing: 2,
+    textTransform: 'uppercase',
+    color: VestroColors.buttonText,
+  },
   priceToggleRow: {
     marginTop: 14,
     flexDirection: 'row',
@@ -407,11 +495,12 @@ const createStyles = (VestroColors: AppColors) => StyleSheet.create({
     fontSize: 13,
     color: VestroColors.ink,
   },
-  resetLayoutButton: {
+  boardLinksRow: {
     marginTop: 14,
-    alignSelf: 'flex-start',
+    flexDirection: 'row',
+    gap: 20,
   },
-  resetLayoutText: {
+  boardLinkText: {
     fontFamily: VestroFonts.sansMedium,
     fontSize: 11,
     letterSpacing: 1,

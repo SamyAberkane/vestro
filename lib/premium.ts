@@ -162,7 +162,7 @@ export async function getIsPremium(): Promise<boolean> {
       .eq('user_id', user.id)
       .maybeSingle();
 
-    if (error) throw error;
+    if (error) throw new Error(error.message);
 
     const active =
       Boolean(data?.is_active) && (!data?.expires_at || new Date(data.expires_at) > new Date());

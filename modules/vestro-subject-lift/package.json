@@ -1,0 +1,8 @@
+{
+  "name": "vestro-subject-lift",
+  "version": "1.0.0",
+  "description": "On-device subject lift (Vision framework) for Vestro's clothing sticker feature",
+  "main": "index.ts",
+  "license": "UNLICENSED",
+  "private": true
+}

@@ -1,9 +1,10 @@
+import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from 'expo-router';
 import * as ImagePicker from 'expo-image-picker';
-import { useCallback, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  Alert,
-  Image,
+  FlatList,
+  RefreshControl,
   ScrollView,
   StyleSheet,
   Text,
@@ -11,16 +12,33 @@ import {
   useWindowDimensions,
   View,
 } from 'react-native';
+import Animated, {
+  Easing,
+  useAnimatedStyle,
+  useSharedValue,
+  withRepeat,
+  withTiming,
+} from 'react-native-reanimated';
 
 import { ClothingOptionsSheet } from '@/components/clothing-options-sheet';
+import { ClothingPreviewModal } from '@/components/clothing-preview-modal';
 import { ColorPickerModal } from '@/components/color-picker-modal';
-import { CropModal } from '@/components/crop-modal';
+import { ConfirmModal } from '@/components/confirm-modal';
 import { PaywallModal } from '@/components/paywall-modal';
 import { ProcessingOverlay } from '@/components/processing-overlay';
+import { ScreenBackground } from '@/components/screen-background';
+import { StickerImage } from '@/components/sticker-image';
 import { AppColors, VestroCategories, VestroFonts, VestroPalette } from '@/constants/theme';
 import { useI18n } from '@/i18n/context';
-import { deleteClothingItem, fetchClothingItems, updateClothingItem } from '@/lib/clothing';
+import { alert } from '@/lib/alert';
+import {
+  deleteClothingItem,
+  fetchClothingItems,
+  subscribeToClothingItemsChanged,
+  updateClothingItem,
+} from '@/lib/clothing';
 import { getIsPremium } from '@/lib/premium';
+import { getRemainingPhotoQuota, MONTHLY_PHOTO_LIMIT } from '@/lib/photo-quota';
 import { useAppTheme } from '@/theme/context';
 import type { ClothingItem } from '@/types/clothing';
 import { formatPrice } from '@/utils/currency';
@@ -31,12 +49,59 @@ import { removeBackground } from '@/utils/remove-background';
 const CONTENT_PADDING = 20;
 const GRID_GAP = 16;
 
+// The native RefreshControl spinner doesn't reliably render on this screen
+// (confirmed live: pulling down does trigger a real reload, but nothing
+// visible ever appears) — this is a fully custom, always-visible stand-in
+// that only depends on the `refreshing` state we already control, not on
+// whatever native rendering quirk is swallowing the system one.
+function RefreshingBadge({ visible, color }: { visible: boolean; color: string }) {
+  const { t } = useI18n();
+  const rotation = useSharedValue(0);
+
+  useEffect(() => {
+    if (visible) {
+      rotation.value = withRepeat(withTiming(360, { duration: 900, easing: Easing.linear }), -1);
+    } else {
+      rotation.value = 0;
+    }
+  }, [visible, rotation]);
+
+  const iconStyle = useAnimatedStyle(() => ({ transform: [{ rotate: `${rotation.value}deg` }] }));
+
+  if (!visible) return null;
+
+  return (
+    <View style={badgeStyles.row} pointerEvents="none">
+      <Animated.View style={iconStyle}>
+        <Ionicons name="refresh" size={14} color={color} />
+      </Animated.View>
+      <Text style={[badgeStyles.text, { color }]}>{t('dressing.refreshing')}</Text>
+    </View>
+  );
+}
+
+const badgeStyles = StyleSheet.create({
+  row: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    paddingTop: 14,
+  },
+  text: {
+    fontFamily: VestroFonts.sansMedium,
+    fontSize: 12,
+    letterSpacing: 0.5,
+  },
+});
+
 export default function DressingScreen() {
-  const { t, tCategory, language } = useI18n();
+  const { t, tCategory, tPlural, language } = useI18n();
   const { colors: VestroColors } = useAppTheme();
   const styles = useMemo(() => createStyles(VestroColors), [VestroColors]);
   const { width: windowWidth } = useWindowDimensions();
   const [clothes, setClothes] = useState<ClothingItem[]>([]);
+const [refreshing, setRefreshing] = useState(false);
 const [selectedCategory, setSelectedCategory] = useState('Tout');
 const [showAvailableOnly, setShowAvailableOnly] = useState(false);
 const [colorFilter, setColorFilter] = useState<string | undefined>(undefined);
@@ -48,16 +113,24 @@ const [colorPickerVisible, setColorPickerVisible] = useState(false);
 const colorSelectRef = useRef<((color: string | undefined) => void) | null>(null);
 const colorDismissRef = useRef<(() => void) | null>(null);
 const [optionsItemId, setOptionsItemId] = useState<number | null>(null);
-const [cropTarget, setCropTarget] = useState<{ id: number; image: string } | null>(null);
+const [previewItemId, setPreviewItemId] = useState<number | null>(null);
 const [paywallVisible, setPaywallVisible] = useState(false);
 const [isPremium, setIsPremium] = useState(false);
+const [remainingCredits, setRemainingCredits] = useState<number | null>(null);
+const [selectionMode, setSelectionMode] = useState(false);
+const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
+const [bulkDeleteConfirmVisible, setBulkDeleteConfirmVisible] = useState(false);
 
 useFocusEffect(
   useCallback(() => {
-    getIsPremium().then(setIsPremium);
+    getIsPremium().then((active) => {
+      setIsPremium(active);
+      if (active) getRemainingPhotoQuota().then(setRemainingCredits);
+    });
   }, [])
 );
 const optionsItem = clothes.find((clothing) => clothing.id === optionsItemId) ?? null;
+const previewItem = clothes.find((clothing) => clothing.id === previewItemId) ?? null;
 
 function openColorPicker(
   onPick: (color: string | undefined) => void,
@@ -91,19 +164,32 @@ const filteredClothes = ownedClothes
   .filter((item) => !showAvailableOnly || item.available !== false)
   .filter((item) => !colorFilter || item.color === colorFilter);
 
+const loadClothes = useCallback(async () => {
+  try {
+    setClothes(await fetchClothingItems());
+  } catch (error) {
+    alert(t('common.errorTitle'), String(error instanceof Error ? error.message : error));
+  }
+}, [t]);
+
 useFocusEffect(
   useCallback(() => {
-    async function loadClothes() {
-      try {
-        setClothes(await fetchClothingItems());
-      } catch (error) {
-        Alert.alert(t('common.errorTitle'), String(error instanceof Error ? error.message : error));
-      }
-    }
-
     loadClothes();
-  }, [])
+  }, [loadClothes])
 );
+
+// The tab bar's global "+" button adds items from outside this screen's
+// component tree, and navigating back to a tab that's already focused
+// (adding while already on Dressing) fires no focus event to catch it via
+// useFocusEffect above — this subscription is what makes a freshly added
+// garment show up immediately in that case, with no scroll/tab switch.
+useEffect(() => subscribeToClothingItemsChanged(loadClothes), [loadClothes]);
+
+async function handleRefresh() {
+  setRefreshing(true);
+  await loadClothes();
+  setRefreshing(false);
+}
 
 async function updateOptionsItem(id: number, patch: Parameters<typeof updateClothingItem>[1]) {
   setClothes((currentClothes) =>
@@ -113,22 +199,74 @@ async function updateOptionsItem(id: number, patch: Parameters<typeof updateClot
   try {
     await updateClothingItem(id, patch);
   } catch (error) {
-    Alert.alert(t('common.errorTitle'), String(error instanceof Error ? error.message : error));
+    alert(t('common.errorTitle'), String(error instanceof Error ? error.message : error));
   }
 }
 
-function openClothingOptions(item: ClothingItem) {
-  setOptionsItemId(item.id);
+function toggleSelectionMode() {
+  setSelectionMode((current) => !current);
+  setSelectedIds(new Set());
 }
 
-function requestCrop() {
-  if (!optionsItem?.image) return;
-  const target = { id: optionsItem.id, image: optionsItem.image };
-  // Two RN <Modal>s open at once is flaky (the second one can silently fail
-  // to present, especially on Android) — close the options sheet first and
-  // let its dismiss animation finish before presenting the crop modal.
-  setOptionsItemId(null);
-  setTimeout(() => setCropTarget(target), 300);
+function toggleItemSelected(id: number) {
+  setSelectedIds((current) => {
+    const next = new Set(current);
+    if (next.has(id)) next.delete(id);
+    else next.add(id);
+    return next;
+  });
+}
+
+function handleCardPress(item: ClothingItem) {
+  if (selectionMode) {
+    toggleItemSelected(item.id);
+    return;
+  }
+  setPreviewItemId(item.id);
+}
+
+function handleCardLongPress(item: ClothingItem) {
+  if (selectionMode) return;
+  setSelectionMode(true);
+  setSelectedIds(new Set([item.id]));
+}
+
+function toggleSelectAll() {
+  setSelectedIds((current) =>
+    current.size === filteredClothes.length
+      ? new Set()
+      : new Set(filteredClothes.map((item) => item.id))
+  );
+}
+
+async function handleBulkMoveToWishlist() {
+  const ids = [...selectedIds];
+  setSelectionMode(false);
+  setSelectedIds(new Set());
+  await Promise.all(ids.map((id) => updateOptionsItem(id, { status: 'wishlist' })));
+}
+
+async function handleBulkDelete() {
+  const ids = [...selectedIds];
+  setBulkDeleteConfirmVisible(false);
+  setSelectionMode(false);
+  setSelectedIds(new Set());
+
+  setClothes((currentClothes) => currentClothes.filter((clothing) => !ids.includes(clothing.id)));
+
+  const results = await Promise.allSettled(ids.map((id) => deleteClothingItem(id)));
+  const firstFailure = results.find(
+    (result): result is PromiseRejectedResult => result.status === 'rejected'
+  );
+  if (firstFailure) {
+    const error = firstFailure.reason;
+    alert(t('common.errorTitle'), String(error instanceof Error ? error.message : error));
+    // The optimistic removal above already dropped these from view; a
+    // partial failure means some rows are still alive server-side, so a
+    // refetch is what puts things back in sync instead of leaving stale
+    // "deleted" items missing from the list until the next natural reload.
+    loadClothes();
+  }
 }
 
 async function handleOptionsPhotoChange() {
@@ -137,7 +275,7 @@ async function handleOptionsPhotoChange() {
   const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
 
   if (!permission.granted) {
-    Alert.alert(t('common.permissionTitle'), t('common.permissionPhotos'));
+    alert(t('common.permissionTitle'), t('common.permissionPhotos'));
     return;
   }
 
@@ -151,9 +289,14 @@ async function handleOptionsPhotoChange() {
     const targetId = optionsItem.id;
     setBatchStep({ index: 1, count: 1 });
     setProcessingImageUri(result.assets[0].uri);
-    const newImage = await removeBackground(result.assets[0].uri);
-    setProcessingImageUri(undefined);
-    updateOptionsItem(targetId, { imageDataUri: newImage });
+    try {
+      const newImage = await removeBackground(result.assets[0].uri);
+      updateOptionsItem(targetId, { imageDataUri: newImage });
+    } catch (error) {
+      alert(t('common.errorTitle'), String(error instanceof Error ? error.message : error));
+    } finally {
+      setProcessingImageUri(undefined);
+    }
   }
 }
 
@@ -171,21 +314,29 @@ async function handleOptionsPhotoChange() {
   );
   const cardWidth = (availableWidth - GRID_GAP * (numColumns - 1)) / numColumns;
 
-  return (
-    <View style={styles.screen}>
-    <ScrollView contentContainerStyle={styles.content}>
+  const listHeader = (
+    <>
+      <RefreshingBadge visible={refreshing} color={VestroColors.ink} />
       <View style={styles.header}>
         <View>
           <Text style={styles.title}>{t('dressing.title')}</Text>
           <Text style={styles.count}>{t('dressing.count', { count: ownedClothes.length })}</Text>
           <TouchableOpacity style={styles.premiumBadge} onPress={() => setPaywallVisible(true)}>
             <Text style={styles.premiumBadgeText}>
-              {t(isPremium ? 'premium.entryPointActive' : 'premium.entryPoint')}
+              {isPremium && remainingCredits !== null
+                ? `💎 ${remainingCredits}/${MONTHLY_PHOTO_LIMIT}`
+                : t(isPremium ? 'premium.entryPointActive' : 'premium.entryPoint')}
             </Text>
           </TouchableOpacity>
         </View>
 
         <View style={styles.headerActions}>
+          <TouchableOpacity onPress={toggleSelectionMode}>
+            <Text style={styles.selectToggleText}>
+              {t(selectionMode ? 'dressing.selectDone' : 'dressing.select')}
+            </Text>
+          </TouchableOpacity>
+
           <View style={styles.viewToggle}>
             <TouchableOpacity
               style={[styles.viewToggleButton, columns === 2 && styles.viewToggleButtonActive]}
@@ -238,7 +389,7 @@ async function handleOptionsPhotoChange() {
 
       <ScrollView
         horizontal
-        style={styles.filtersScroll}
+        style={[styles.filtersScroll, styles.subFiltersScroll]}
         showsHorizontalScrollIndicator={false}
         contentContainerStyle={styles.subFilters}
       >
@@ -271,21 +422,48 @@ async function handleOptionsPhotoChange() {
           );
         })}
       </ScrollView>
+    </>
+  );
 
-      <View style={styles.grid}>
-        {filteredClothes.map((item) => (
+  return (
+    <ScreenBackground style={styles.screen}>
+      <FlatList
+        key={numColumns}
+        data={filteredClothes}
+        keyExtractor={(item) => String(item.id)}
+        numColumns={numColumns}
+        columnWrapperStyle={styles.gridRow}
+        ItemSeparatorComponent={() => <View style={{ height: GRID_GAP }} />}
+        contentContainerStyle={[styles.content, selectionMode && styles.contentWithSelectionBar]}
+        refreshControl={
+          <RefreshControl refreshing={refreshing} onRefresh={handleRefresh} tintColor={VestroColors.ink} />
+        }
+        ListHeaderComponent={listHeader}
+        // Only the ~6-8 cards actually on screen mount at once, instead of
+        // every clothing item downloading and decoding its image
+        // simultaneously the moment this screen opens.
+        windowSize={5}
+        initialNumToRender={8}
+        renderItem={({ item }) => {
+          const isSelected = selectedIds.has(item.id);
+
+          return (
           <TouchableOpacity
             style={[styles.card, { width: cardWidth }]}
-            key={item.id}
-            onPress={() => openClothingOptions(item)}
+            onPress={() => handleCardPress(item)}
+            onLongPress={() => handleCardLongPress(item)}
           >
             <View style={styles.imageWrap}>
+              {selectionMode && (
+                <View style={[styles.checkBadge, isSelected && styles.checkBadgeActive]}>
+                  {isSelected && <Text style={styles.checkGlyph}>✓</Text>}
+                </View>
+              )}
+
               {item.image ? (
-                <Image
-                  source={{ uri: item.image }}
-                  resizeMode="contain"
-                  style={[
-                    styles.clothingImage,
+                <StickerImage
+                  uri={item.image}
+                  containerStyle={[
                     { width: cardWidth, height: cardWidth },
                     item.available === false && styles.unavailableVisual,
                   ]}
@@ -328,9 +506,53 @@ async function handleOptionsPhotoChange() {
               </Text>
             )}
           </TouchableOpacity>
-        ))}
+          );
+        }}
+      />
+
+    {selectionMode && (
+      <View style={styles.selectionBar}>
+        <TouchableOpacity onPress={toggleSelectAll}>
+          <Text style={styles.selectionBarCount}>
+            {selectedIds.size > 0
+              ? tPlural('dressing.selectedCount', selectedIds.size)
+              : t('dressing.selectAll')}
+          </Text>
+        </TouchableOpacity>
+
+        <View style={styles.selectionBarActions}>
+          <TouchableOpacity
+            style={styles.selectionBarButton}
+            disabled={selectedIds.size === 0}
+            onPress={handleBulkMoveToWishlist}
+          >
+            <Text
+              style={[
+                styles.selectionBarButtonText,
+                selectedIds.size === 0 && styles.selectionBarButtonTextDisabled,
+              ]}
+            >
+              {t('dressing.bulkMoveToWishlist')}
+            </Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={styles.selectionBarButton}
+            disabled={selectedIds.size === 0}
+            onPress={() => setBulkDeleteConfirmVisible(true)}
+          >
+            <Text
+              style={[
+                styles.selectionBarButtonTextDestructive,
+                selectedIds.size === 0 && styles.selectionBarButtonTextDisabled,
+              ]}
+            >
+              {t('dressing.bulkDelete')}
+            </Text>
+          </TouchableOpacity>
+        </View>
       </View>
-    </ScrollView>
+    )}
 
       <ProcessingOverlay
         visible={isProcessingImage}
@@ -343,6 +565,16 @@ async function handleOptionsPhotoChange() {
         visible={colorPickerVisible}
         onSelect={handleColorSelect}
         onCancel={handleColorCancel}
+      />
+
+      <ClothingPreviewModal
+        item={previewItem}
+        onClose={() => setPreviewItemId(null)}
+        onEdit={() => {
+          if (!previewItem) return;
+          setOptionsItemId(previewItem.id);
+          setPreviewItemId(null);
+        }}
       />
 
       <ClothingOptionsSheet
@@ -365,7 +597,6 @@ async function handleOptionsPhotoChange() {
           openColorPicker((color) => updateOptionsItem(targetId, { color }));
         }}
         onRequestPhotoChange={handleOptionsPhotoChange}
-        onRequestCrop={requestCrop}
         moveAction={{
           label: t('dressing.moveToWishlist'),
           onPress: () => optionsItem && updateOptionsItem(optionsItem.id, { status: 'wishlist' }),
@@ -376,18 +607,8 @@ async function handleOptionsPhotoChange() {
           setClothes((currentClothes) => currentClothes.filter((clothing) => clothing.id !== targetId));
           setOptionsItemId(null);
           deleteClothingItem(targetId).catch((error) =>
-            Alert.alert(t('common.errorTitle'), String(error instanceof Error ? error.message : error))
+            alert(t('common.errorTitle'), String(error instanceof Error ? error.message : error))
           );
-        }}
-      />
-
-      <CropModal
-        visible={cropTarget !== null}
-        imageUri={cropTarget?.image}
-        onCancel={() => setCropTarget(null)}
-        onConfirm={(croppedDataUri) => {
-          if (cropTarget) updateOptionsItem(cropTarget.id, { imageDataUri: croppedDataUri });
-          setCropTarget(null);
         }}
       />
 
@@ -396,19 +617,32 @@ async function handleOptionsPhotoChange() {
         onClose={() => setPaywallVisible(false)}
         onPremiumChange={setIsPremium}
       />
-    </View>
+
+      <ConfirmModal
+        visible={bulkDeleteConfirmVisible}
+        title={tPlural('dressing.bulkDeleteConfirmTitle', selectedIds.size)}
+        message={t('dressing.bulkDeleteConfirmMessage')}
+        confirmLabel={t('dressing.bulkDelete')}
+        cancelLabel={t('common.cancel')}
+        destructive
+        onConfirm={handleBulkDelete}
+        onCancel={() => setBulkDeleteConfirmVisible(false)}
+      />
+    </ScreenBackground>
   );
 }
 
 const createStyles = (VestroColors: AppColors) => StyleSheet.create({
   screen: {
     flex: 1,
-    backgroundColor: VestroColors.background,
   },
   content: {
     paddingTop: 65,
     paddingHorizontal: 20,
     paddingBottom: 40,
+  },
+  contentWithSelectionBar: {
+    paddingBottom: 90,
   },
   header: {
     flexDirection: 'row',
@@ -445,7 +679,14 @@ const createStyles = (VestroColors: AppColors) => StyleSheet.create({
   headerActions: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 10,
+    gap: 14,
+  },
+  selectToggleText: {
+    fontFamily: VestroFonts.sansMedium,
+    fontSize: 11,
+    letterSpacing: 1,
+    textTransform: 'uppercase',
+    color: VestroColors.ink,
   },
   viewToggle: {
     flexDirection: 'row',
@@ -534,17 +775,14 @@ const createStyles = (VestroColors: AppColors) => StyleSheet.create({
     textTransform: 'uppercase',
     color: VestroColors.muted,
   },
-  grid: {
-    marginTop: 24,
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 16,
+  subFiltersScroll: {
+    marginBottom: 24,
+  },
+  gridRow: {
+    gap: GRID_GAP,
   },
   card: {},
   imagePlaceholder: {},
-  clothingImage: {
-    backgroundColor: VestroColors.surface,
-  },
   itemName: {
     marginTop: 8,
     fontFamily: VestroFonts.serifMedium,
@@ -572,6 +810,72 @@ const createStyles = (VestroColors: AppColors) => StyleSheet.create({
   },
   imageWrap: {
     position: 'relative',
+  },
+  checkBadge: {
+    position: 'absolute',
+    top: 8,
+    right: 8,
+    zIndex: 1,
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    backgroundColor: 'transparent',
+    borderWidth: 1.5,
+    borderColor: VestroColors.border,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  checkBadgeActive: {
+    backgroundColor: VestroColors.ink,
+    borderColor: VestroColors.ink,
+  },
+  checkGlyph: {
+    fontFamily: VestroFonts.sansSemiBold,
+    fontSize: 12,
+    color: VestroColors.buttonText,
+  },
+  selectionBar: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    bottom: 0,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 20,
+    paddingVertical: 16,
+    backgroundColor: VestroColors.surface,
+    borderTopWidth: 1,
+    borderTopColor: VestroColors.border,
+  },
+  selectionBarCount: {
+    fontFamily: VestroFonts.sansMedium,
+    fontSize: 12,
+    letterSpacing: 0.5,
+    color: VestroColors.ink,
+  },
+  selectionBarActions: {
+    flexDirection: 'row',
+    gap: 20,
+  },
+  selectionBarButton: {},
+  selectionBarButtonText: {
+    fontFamily: VestroFonts.sansSemiBold,
+    fontSize: 12,
+    letterSpacing: 0.5,
+    textTransform: 'uppercase',
+    color: VestroColors.ink,
+  },
+  selectionBarButtonTextDestructive: {
+    fontFamily: VestroFonts.sansSemiBold,
+    fontSize: 12,
+    letterSpacing: 0.5,
+    textTransform: 'uppercase',
+    color: '#B2554A',
+  },
+  selectionBarButtonTextDisabled: {
+    color: VestroColors.muted,
+    opacity: 0.5,
   },
   unavailableVisual: {
     opacity: 0.4,

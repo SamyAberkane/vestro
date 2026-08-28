@@ -1,7 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
 import {
-  Alert,
-  Image,
   KeyboardAvoidingView,
   Modal,
   Platform,
@@ -14,8 +12,10 @@ import {
   View,
 } from 'react-native';
 
+import { StickerImage } from '@/components/sticker-image';
 import { AppColors, VestroFonts } from '@/constants/theme';
 import { useI18n } from '@/i18n/context';
+import { alert } from '@/lib/alert';
 import { useAppTheme } from '@/theme/context';
 import { currencySymbol, formatPriceInput, isUSD } from '@/utils/currency';
 
@@ -40,7 +40,6 @@ type ClothingOptionsSheetProps = {
   onChangeAvailability: (available: boolean, reason?: string) => void;
   onRequestColorChange: () => void;
   onRequestPhotoChange: () => void;
-  onRequestCrop: () => void;
   moveAction: { label: string; onPress: () => void };
   onDelete: () => void;
 };
@@ -55,7 +54,6 @@ export function ClothingOptionsSheet({
   onChangeAvailability,
   onRequestColorChange,
   onRequestPhotoChange,
-  onRequestCrop,
   moveAction,
   onDelete,
 }: ClothingOptionsSheetProps) {
@@ -100,7 +98,7 @@ export function ClothingOptionsSheet({
   }
 
   function confirmDelete() {
-    Alert.alert(
+    alert(
       t('options.deleteConfirmTitle'),
       t('options.deleteConfirmMessage', { name: item?.name ?? '' }),
       [
@@ -129,11 +127,8 @@ export function ClothingOptionsSheet({
             >
             <View style={styles.header}>
               {item.image ? (
-                <TouchableOpacity
-                  style={[styles.thumb, { backgroundColor: VestroColors.surface }]}
-                  onPress={onRequestPhotoChange}
-                >
-                  <Image source={{ uri: item.image }} style={styles.thumbImage} resizeMode="contain" />
+                <TouchableOpacity style={styles.thumb} onPress={onRequestPhotoChange}>
+                  <StickerImage uri={item.image} containerStyle={styles.thumbImage} />
                 </TouchableOpacity>
               ) : (
                 <TouchableOpacity
@@ -252,13 +247,6 @@ export function ClothingOptionsSheet({
               <Text style={styles.actionLabel}>{t('options.changePhoto')}</Text>
               <Text style={styles.actionChevron}>›</Text>
             </TouchableOpacity>
-
-            {item.image && (
-              <TouchableOpacity style={styles.actionRow} onPress={onRequestCrop}>
-                <Text style={styles.actionLabel}>{t('options.cropPhoto')}</Text>
-                <Text style={styles.actionChevron}>›</Text>
-              </TouchableOpacity>
-            )}
 
             <TouchableOpacity
               style={styles.actionRow}

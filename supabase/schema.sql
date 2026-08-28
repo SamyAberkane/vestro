@@ -51,16 +51,33 @@ create table if not exists public.premium_entitlements (
   updated_at timestamptz not null default now()
 );
 
+-- Monthly Gemini usage counter, one row per user. `period_start` is always the
+-- first day of the calendar month the `count` applies to — the edit-clothing-photo
+-- edge function resets `count` to 1 (rather than incrementing) whenever it sees
+-- a stale `period_start`, so this table never needs a cron job to roll over.
+-- Written only by that function's service-role key, same reasoning as
+-- premium_entitlements: a patched client can't just reset its own usage.
+create table if not exists public.photo_usage (
+  user_id uuid primary key references auth.users (id) on delete cascade,
+  period_start date not null,
+  count integer not null default 0
+);
+
 -- Row Level Security: every user only ever sees their own rows
 alter table public.clothing_items enable row level security;
 alter table public.outfits enable row level security;
 alter table public.active_looks enable row level security;
 alter table public.premium_entitlements enable row level security;
+alter table public.photo_usage enable row level security;
 
 -- Read-only for regular users: no insert/update/delete policy exists, so the
 -- app itself can never write here (only the service-role key used by the
 -- verify-purchase edge function can, which bypasses RLS entirely).
 create policy "premium_entitlements_select_own" on public.premium_entitlements for select using (auth.uid() = user_id);
+
+-- Same read-only pattern as premium_entitlements above — only the service-role
+-- key used by the edit-clothing-photo edge function can write here.
+create policy "photo_usage_select_own" on public.photo_usage for select using (auth.uid() = user_id);
 
 -- Vestro has no free tier — every row a user can touch also requires an
 -- active, server-verified subscription, not just ownership. This is what
@@ -82,6 +99,30 @@ as $$
 $$;
 
 grant execute on function public.has_active_premium() to authenticated;
+
+-- Atomic upsert for the monthly photo quota — the edit-clothing-photo edge
+-- function calls this (via its service-role key only, never exposed to the
+-- app) right after a redraw call that actually produced a billed image. A
+-- single upsert avoids a read-then-write race between two calls landing at
+-- the same moment; resets to 1 instead of incrementing whenever the stored
+-- period_start is older than the month being reported.
+create or replace function public.increment_photo_usage(p_user_id uuid, p_period_start date)
+returns void
+language sql
+security definer
+set search_path = public
+as $$
+  insert into public.photo_usage (user_id, period_start, count)
+  values (p_user_id, p_period_start, 1)
+  on conflict (user_id) do update set
+    count = case when public.photo_usage.period_start = excluded.period_start
+                 then public.photo_usage.count + 1
+                 else 1 end,
+    period_start = excluded.period_start;
+$$;
+
+revoke all on function public.increment_photo_usage(uuid, date) from public;
+grant execute on function public.increment_photo_usage(uuid, date) to service_role;
 
 -- Reading your own data is always allowed, even without an active
 -- subscription, so a lapsed/never-paying user never loses access to

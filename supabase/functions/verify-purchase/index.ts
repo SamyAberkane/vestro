@@ -105,17 +105,25 @@ type AppleTransactionInfo = {
 // host, real purchases only on production — Apple's own guidance is to just
 // try production first and fall back to sandbox on a 404, rather than
 // tracking which environment a given build is in.
+//
+// Falls through to the next host on ANY non-ok response, not just 404 — a
+// production-side auth failure (401, e.g. from a Paid Apps Agreement that
+// hasn't been accepted) used to abort here immediately and never even try
+// sandbox, which is where App Review's own sandbox transactions actually
+// live. That looked like "the in-app purchase is broken" to reviewers
+// (Guideline 2.1(b)) when it was really just this fallback never running.
 async function fetchTransactionInfo(transactionId: string, appleJwt: string): Promise<AppleTransactionInfo> {
   const hosts = ['https://api.storekit.itunes.apple.com', 'https://api.storekit-sandbox.itunes.apple.com'];
+  let lastError: string | null = null;
 
   for (const host of hosts) {
     const response = await fetch(`${host}/inApps/v1/transactions/${transactionId}`, {
       headers: { Authorization: `Bearer ${appleJwt}` },
     });
 
-    if (response.status === 404) continue;
     if (!response.ok) {
-      throw new Error(`Apple a répondu HTTP ${response.status} (${host})`);
+      lastError = `HTTP ${response.status} (${host})`;
+      continue;
     }
 
     const { signedTransactionInfo } = await response.json();
@@ -123,7 +131,11 @@ async function fetchTransactionInfo(transactionId: string, appleJwt: string): Pr
     return base64urlDecodeToJson<AppleTransactionInfo>(payload);
   }
 
-  throw new Error('Transaction introuvable côté Apple (ni production ni sandbox)');
+  throw new Error(
+    lastError
+      ? `Transaction introuvable côté Apple (${lastError})`
+      : 'Transaction introuvable côté Apple (ni production ni sandbox)'
+  );
 }
 
 Deno.serve(async (req) => {

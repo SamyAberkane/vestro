@@ -3,7 +3,6 @@ import { router } from 'expo-router';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
-  Alert,
   Dimensions,
   FlatList,
   Linking,
@@ -20,6 +19,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { AppColors, VestroFonts } from '@/constants/theme';
 import { useI18n } from '@/i18n/context';
+import { alert } from '@/lib/alert';
 import {
   getIsPremium,
   isRealIAPAvailable,
@@ -27,6 +27,7 @@ import {
   restorePurchases,
   setSimulatedPremium,
 } from '@/lib/premium';
+import { getRemainingPhotoQuota, MONTHLY_PHOTO_LIMIT } from '@/lib/photo-quota';
 import { useAppTheme } from '@/theme/context';
 
 type PaywallModalProps = {
@@ -139,11 +140,16 @@ export function PaywallModal({
   const { colors: VestroColors } = useAppTheme();
   const styles = useMemo(() => createStyles(VestroColors), [VestroColors]);
   const [isPremium, setIsPremium] = useState(false);
+  const [remainingCredits, setRemainingCredits] = useState<number | null>(null);
   const [isProcessing, setIsProcessing] = useState(false);
   const [isRestoring, setIsRestoring] = useState(false);
 
   useEffect(() => {
-    if (visible) getIsPremium().then(setIsPremium);
+    if (!visible) return;
+    getIsPremium().then((active) => {
+      setIsPremium(active);
+      if (active) getRemainingPhotoQuota().then(setRemainingCredits);
+    });
   }, [visible]);
 
   async function handleSubscribe() {
@@ -156,11 +162,12 @@ export function PaywallModal({
 
       const active = await getIsPremium();
       setIsPremium(active);
+      if (active) setRemainingCredits(await getRemainingPhotoQuota());
       onPremiumChange?.(active);
-      if (active) Alert.alert(t('premium.subscribedTitle'), t('premium.subscribedMessage'));
+      if (active) alert(t('premium.subscribedTitle'), t('premium.subscribedMessage'));
     } catch (error: any) {
       if (error?.code !== 'E_USER_CANCELLED') {
-        Alert.alert(t('common.errorTitle'), String(error?.message ?? error));
+        alert(t('common.errorTitle'), String(error?.message ?? error));
       }
     } finally {
       setIsProcessing(false);
@@ -173,13 +180,14 @@ export function PaywallModal({
     try {
       const active = await restorePurchases();
       setIsPremium(active);
+      if (active) setRemainingCredits(await getRemainingPhotoQuota());
       onPremiumChange?.(active);
-      Alert.alert(
+      alert(
         active ? t('premium.subscribedTitle') : t('premium.restoreNoneTitle'),
         active ? t('premium.subscribedMessage') : t('premium.restoreNoneMessage')
       );
     } catch (error) {
-      Alert.alert(t('common.errorTitle'), String(error instanceof Error ? error.message : error));
+      alert(t('common.errorTitle'), String(error instanceof Error ? error.message : error));
     } finally {
       setIsRestoring(false);
     }
@@ -193,7 +201,7 @@ export function PaywallModal({
       return;
     }
 
-    Alert.alert(t('premium.activeTitle'), t('premium.manageCta'), [
+    alert(t('premium.activeTitle'), t('premium.manageCta'), [
       { text: t('common.cancel'), style: 'cancel' },
       {
         text: t('premium.manageCta'),
@@ -202,7 +210,7 @@ export function PaywallModal({
           await setSimulatedPremium(false);
           setIsPremium(false);
           onPremiumChange?.(false);
-          Alert.alert(t('premium.cancelledTitle'), t('premium.cancelledMessage'));
+          alert(t('premium.cancelledTitle'), t('premium.cancelledMessage'));
         },
       },
     ]);
@@ -231,6 +239,14 @@ export function PaywallModal({
           <Text style={styles.badge}>✨</Text>
           <Text style={styles.title}>{isPremium ? t('premium.activeTitle') : t('premium.title')}</Text>
           <Text style={styles.tagline}>{isPremium ? t('premium.activeTagline') : t('premium.tagline')}</Text>
+
+          {isPremium && remainingCredits !== null && (
+            <View style={styles.creditsBadge}>
+              <Text style={styles.creditsText}>
+                💎 {t('premium.creditsRemaining', { remaining: remainingCredits, limit: MONTHLY_PHOTO_LIMIT })}
+              </Text>
+            </View>
+          )}
 
           <FeatureCarousel />
 
@@ -344,6 +360,21 @@ const createStyles = (VestroColors: AppColors) => StyleSheet.create({
     fontSize: 15,
     color: VestroColors.muted,
     textAlign: 'center',
+  },
+  creditsBadge: {
+    marginTop: 16,
+    alignSelf: 'center',
+    paddingHorizontal: 14,
+    paddingVertical: 7,
+    borderRadius: 20,
+    backgroundColor: VestroColors.surface,
+    borderWidth: 1,
+    borderColor: VestroColors.border,
+  },
+  creditsText: {
+    fontFamily: VestroFonts.sansSemiBold,
+    fontSize: 12,
+    color: VestroColors.ink,
   },
   carouselWrap: {
     marginTop: 36,

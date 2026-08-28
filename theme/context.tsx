@@ -1,9 +1,9 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { createContext, useContext, useEffect, useState } from 'react';
 
-import { AppColors, VestroColorsDark, VestroColorsLight } from '@/constants/theme';
+import { AppColors, VestroColorsAmethyst, VestroColorsDark, VestroColorsLight } from '@/constants/theme';
 
-export type ColorScheme = 'light' | 'dark';
+export type ColorScheme = 'light' | 'dark' | 'amethyst';
 
 const STORAGE_KEY = 'vestro-color-scheme';
 
@@ -15,12 +15,18 @@ export type ThemeContextValue = {
 
 const ThemeContext = createContext<ThemeContextValue | null>(null);
 
+const SCHEME_COLORS: Record<ColorScheme, AppColors> = {
+  light: VestroColorsLight,
+  dark: VestroColorsDark,
+  amethyst: VestroColorsAmethyst,
+};
+
 export function AppThemeProvider({ children }: { children: React.ReactNode }) {
-  const [scheme, setSchemeState] = useState<ColorScheme>('light');
+  const [scheme, setSchemeState] = useState<ColorScheme>('amethyst');
 
   useEffect(() => {
     AsyncStorage.getItem(STORAGE_KEY).then((saved) => {
-      if (saved === 'light' || saved === 'dark') setSchemeState(saved);
+      if (saved === 'light' || saved === 'dark' || saved === 'amethyst') setSchemeState(saved);
     });
   }, []);
 
@@ -29,7 +35,7 @@ export function AppThemeProvider({ children }: { children: React.ReactNode }) {
     AsyncStorage.setItem(STORAGE_KEY, next);
   }
 
-  const colors = scheme === 'dark' ? VestroColorsDark : VestroColorsLight;
+  const colors = SCHEME_COLORS[scheme];
 
   return (
     <ThemeContext.Provider value={{ scheme, colors, setScheme }}>

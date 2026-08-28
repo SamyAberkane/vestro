@@ -1,11 +1,12 @@
 import { Ionicons } from '@expo/vector-icons';
 import { router } from 'expo-router';
 import { useMemo, useState } from 'react';
-import { ActivityIndicator, Alert, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { ActivityIndicator, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 
 import { useAuth } from '@/auth/context';
 import { AppColors, VestroFonts } from '@/constants/theme';
 import { useI18n } from '@/i18n/context';
+import { alert } from '@/lib/alert';
 import { useAppTheme } from '@/theme/context';
 
 export default function LoginScreen() {
@@ -22,7 +23,7 @@ export default function LoginScreen() {
       await continueWithApple();
     } catch (error: any) {
       if (error?.code !== 'ERR_REQUEST_CANCELED') {
-        Alert.alert(t('common.errorTitle'), String(error?.message ?? error));
+        alert(t('common.errorTitle'), String(error?.message ?? error));
       }
     }
 
@@ -32,7 +33,7 @@ export default function LoginScreen() {
   return (
     <View style={styles.screen}>
       <View style={styles.content}>
-        <Text style={styles.logo}>Vestro</Text>
+        <Text style={styles.logo}>Crystal AI Closet</Text>
         <Text style={styles.tagline}>{t('auth.tagline')}</Text>
 
         <TouchableOpacity style={styles.appleButton} onPress={handlePress} disabled={submitting}>
@@ -72,7 +73,7 @@ const createStyles = (VestroColors: AppColors) => StyleSheet.create({
   },
   logo: {
     fontFamily: VestroFonts.serifSemiBoldItalic,
-    fontSize: 34,
+    fontSize: 26,
     color: VestroColors.ink,
     textAlign: 'center',
   },

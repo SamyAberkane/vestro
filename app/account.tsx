@@ -1,12 +1,16 @@
 import { router } from 'expo-router';
-import { useMemo, useState } from 'react';
-import { ActivityIndicator, Alert, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { useEffect, useMemo, useState } from 'react';
+import { ActivityIndicator, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { useAuth } from '@/auth/context';
+import { PaywallModal } from '@/components/paywall-modal';
 import { AppColors, VestroFonts } from '@/constants/theme';
 import { useI18n } from '@/i18n/context';
 import { deleteAccount } from '@/lib/account';
+import { alert } from '@/lib/alert';
+import { getIsPremium } from '@/lib/premium';
+import { getRemainingPhotoQuota, MONTHLY_PHOTO_LIMIT } from '@/lib/photo-quota';
 import { useAppTheme } from '@/theme/context';
 
 const DESTRUCTIVE_RED = '#DC2626';
@@ -18,9 +22,25 @@ export default function AccountScreen() {
   const { signOut } = useAuth();
   const insets = useSafeAreaInsets();
   const [isDeleting, setIsDeleting] = useState(false);
+  const [isPremium, setIsPremium] = useState(false);
+  const [remainingCredits, setRemainingCredits] = useState<number | null>(null);
+  const [paywallVisible, setPaywallVisible] = useState(false);
+
+  useEffect(() => {
+    getIsPremium().then((active) => {
+      setIsPremium(active);
+      if (active) getRemainingPhotoQuota().then(setRemainingCredits);
+    });
+  }, []);
+
+  function handlePremiumChange(active: boolean) {
+    setIsPremium(active);
+    if (active) getRemainingPhotoQuota().then(setRemainingCredits);
+    else setRemainingCredits(null);
+  }
 
   function handleDelete() {
-    Alert.alert(t('account.deleteConfirmTitle'), t('account.deleteConfirmMessage'), [
+    alert(t('account.deleteConfirmTitle'), t('account.deleteConfirmMessage'), [
       { text: t('common.cancel'), style: 'cancel' },
       {
         text: t('account.deleteConfirmButton'),
@@ -31,7 +51,7 @@ export default function AccountScreen() {
             await deleteAccount();
           } catch (error) {
             setIsDeleting(false);
-            Alert.alert(t('common.errorTitle'), String(error instanceof Error ? error.message : error));
+            alert(t('common.errorTitle'), String(error instanceof Error ? error.message : error));
           }
         },
       },
@@ -50,6 +70,19 @@ export default function AccountScreen() {
         </TouchableOpacity>
 
         <Text style={styles.title}>{t('account.title')}</Text>
+
+        <View style={styles.section}>
+          <TouchableOpacity style={[styles.row, styles.rowLast]} onPress={() => setPaywallVisible(true)}>
+            <Text style={styles.rowText}>
+              {isPremium ? t('account.premiumActiveRow') : t('account.premiumInactiveRow')}
+            </Text>
+            {isPremium && remainingCredits !== null && (
+              <Text style={styles.rowSubtext}>
+                💎 {t('premium.creditsRemaining', { remaining: remainingCredits, limit: MONTHLY_PHOTO_LIMIT })}
+              </Text>
+            )}
+          </TouchableOpacity>
+        </View>
 
         <View style={styles.section}>
           <TouchableOpacity style={styles.row} onPress={() => signOut()}>
@@ -77,6 +110,12 @@ export default function AccountScreen() {
           )}
         </TouchableOpacity>
       </ScrollView>
+
+      <PaywallModal
+        visible={paywallVisible}
+        onClose={() => setPaywallVisible(false)}
+        onPremiumChange={handlePremiumChange}
+      />
     </View>
   );
 }
@@ -129,6 +168,12 @@ const createStyles = (VestroColors: AppColors) => StyleSheet.create({
   rowText: {
     fontFamily: VestroFonts.sans,
     fontSize: 14,
+    color: VestroColors.ink,
+  },
+  rowSubtext: {
+    marginTop: 6,
+    fontFamily: VestroFonts.sansSemiBold,
+    fontSize: 13,
     color: VestroColors.ink,
   },
   deleteButton: {

@@ -8,7 +8,8 @@
     "android": "expo start --android",
     "ios": "expo start --ios",
     "web": "expo start --web",
-    "lint": "expo lint"
+    "lint": "expo lint",
+    "postinstall": "patch-package"
   },
   "dependencies": {
     "@expo-google-fonts/archivo": "^0.4.2",
@@ -20,16 +21,17 @@
     "@react-navigation/native": "^7.1.8",
     "@supabase/supabase-js": "^2.110.8",
     "base64-js": "^1.5.1",
-    "expo": "~54.0.35",
+    "expo": "~54.0.37",
     "expo-apple-authentication": "~8.0.8",
     "expo-build-properties": "~1.0.10",
-    "expo-constants": "~18.0.13",
+    "expo-constants": "~18.0.14",
     "expo-crypto": "~15.0.9",
     "expo-font": "~14.0.12",
     "expo-haptics": "~15.0.8",
     "expo-image": "~3.0.11",
     "expo-image-manipulator": "~14.0.8",
     "expo-image-picker": "~17.0.11",
+    "expo-linear-gradient": "~15.0.8",
     "expo-linking": "~8.0.12",
     "expo-localization": "~17.0.9",
     "expo-location": "~19.0.8",
@@ -51,13 +53,15 @@
     "react-native-url-polyfill": "^4.0.0",
     "react-native-web": "~0.21.0",
     "react-native-worklets": "0.5.1",
-    "upng-js": "^2.1.0"
+    "upng-js": "^2.1.0",
+    "vestro-subject-lift": "file:./modules/vestro-subject-lift"
   },
   "devDependencies": {
     "@types/pako": "^2.0.4",
     "@types/react": "~19.1.0",
     "eslint": "^9.25.0",
     "eslint-config-expo": "~10.0.0",
+    "patch-package": "^8.0.1",
     "typescript": "~5.9.2"
   },
   "private": true

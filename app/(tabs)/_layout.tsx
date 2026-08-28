@@ -4,6 +4,8 @@ import { useMemo } from 'react';
 import { StyleSheet, TouchableOpacity, View } from 'react-native';
 
 import { ItemReveal } from '@/components/item-reveal';
+import { PaywallModal } from '@/components/paywall-modal';
+import { PhotoTipsModal } from '@/components/photo-tips-modal';
 import { ProcessingOverlay } from '@/components/processing-overlay';
 import { AppColors, VestroFonts } from '@/constants/theme';
 import { useAddClothing } from '@/hooks/use-add-clothing';
@@ -35,8 +37,19 @@ export default function TabLayout() {
   const { t } = useI18n();
   const { colors: VestroColors } = useAppTheme();
   const styles = useMemo(() => createStyles(VestroColors), [VestroColors]);
-  const { addClothing, isProcessing, processingImageUri, batchStep, revealItems, finishReveal } =
-    useAddClothing();
+  const {
+    addClothing,
+    isProcessing,
+    processingImageUri,
+    batchStep,
+    revealItems,
+    finishReveal,
+    photoTipsVisible,
+    closePhotoTips,
+    onPhotoTipsDismissed,
+    paywallVisible,
+    dismissPaywall,
+  } = useAddClothing();
 
   return (
     <View style={styles.container}>
@@ -117,6 +130,14 @@ export default function TabLayout() {
       />
 
       <ItemReveal items={revealItems} visible={revealItems.length > 0} onDone={finishReveal} />
+
+      <PhotoTipsModal
+        visible={photoTipsVisible}
+        onContinue={closePhotoTips}
+        onDismiss={onPhotoTipsDismissed}
+      />
+
+      <PaywallModal visible={paywallVisible} onClose={dismissPaywall} />
     </View>
   );
 }

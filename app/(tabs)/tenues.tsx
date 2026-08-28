@@ -1,7 +1,6 @@
 import { router, useFocusEffect } from 'expo-router';
 import { useCallback, useMemo, useState } from 'react';
 import {
-  Alert,
   LayoutChangeEvent,
   ScrollView,
   StyleSheet,
@@ -13,8 +12,10 @@ import {
 
 import { ConfirmModal } from '@/components/confirm-modal';
 import { OutfitPreview } from '@/components/outfit-canvas';
+import { ScreenBackground } from '@/components/screen-background';
 import { AppColors, VestroFonts } from '@/constants/theme';
 import { useI18n } from '@/i18n/context';
+import { alert } from '@/lib/alert';
 import { fetchClothingItems } from '@/lib/clothing';
 import { deleteOutfit, fetchOutfits } from '@/lib/outfits';
 import { useAppTheme } from '@/theme/context';
@@ -33,12 +34,16 @@ function OutfitCard({
   outfit,
   items,
   cardWidth,
+  selectionMode,
+  isSelected,
   onPress,
   onLongPress,
 }: {
   outfit: Outfit;
   items: ClothingItem[];
   cardWidth: number;
+  selectionMode: boolean;
+  isSelected: boolean;
   onPress: () => void;
   onLongPress: () => void;
 }) {
@@ -58,6 +63,12 @@ function OutfitCard({
       onLongPress={onLongPress}
     >
       <View style={styles.previewWrap} onLayout={handleLayout}>
+        {selectionMode && (
+          <View style={[styles.checkBadge, isSelected && styles.checkBadgeActive]}>
+            {isSelected && <Text style={styles.checkGlyph}>✓</Text>}
+          </View>
+        )}
+
         {size > 0 && (
           <OutfitPreview
             items={items}
@@ -79,13 +90,15 @@ function OutfitCard({
 }
 
 export default function TenuesScreen() {
-  const { t } = useI18n();
+  const { t, tPlural } = useI18n();
   const { colors: VestroColors } = useAppTheme();
   const styles = useMemo(() => createStyles(VestroColors), [VestroColors]);
   const { width: windowWidth } = useWindowDimensions();
   const [clothes, setClothes] = useState<ClothingItem[]>([]);
   const [outfits, setOutfits] = useState<Outfit[]>([]);
-  const [deleteTarget, setDeleteTarget] = useState<Outfit | null>(null);
+  const [selectionMode, setSelectionMode] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
+  const [bulkDeleteConfirmVisible, setBulkDeleteConfirmVisible] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
 
   const availableWidth = windowWidth - CONTENT_PADDING * 2;
@@ -106,7 +119,7 @@ export default function TenuesScreen() {
           setClothes(loadedClothes);
           setOutfits(loadedOutfits);
         } catch (error) {
-          Alert.alert(t('common.errorTitle'), String(error instanceof Error ? error.message : error));
+          alert(t('common.errorTitle'), String(error instanceof Error ? error.message : error));
         }
       }
 
@@ -114,35 +127,94 @@ export default function TenuesScreen() {
     }, [])
   );
 
-  async function confirmDeleteOutfit() {
-    if (!deleteTarget) return;
+  function toggleSelectionMode() {
+    setSelectionMode((current) => !current);
+    setSelectedIds(new Set());
+  }
+
+  function toggleItemSelected(id: number) {
+    setSelectedIds((current) => {
+      const next = new Set(current);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  function toggleSelectAll() {
+    setSelectedIds((current) =>
+      current.size === outfits.length ? new Set() : new Set(outfits.map((outfit) => outfit.id))
+    );
+  }
+
+  function handleCardPress(outfit: Outfit) {
+    if (selectionMode) {
+      toggleItemSelected(outfit.id);
+      return;
+    }
+    router.push(`/create-outfit?id=${outfit.id}`);
+  }
+
+  function handleCardLongPress(outfit: Outfit) {
+    if (selectionMode) return;
+    setSelectionMode(true);
+    setSelectedIds(new Set([outfit.id]));
+  }
+
+  async function confirmBulkDelete() {
+    const ids = [...selectedIds];
 
     setIsDeleting(true);
     try {
-      await deleteOutfit(deleteTarget.id);
-      setOutfits((current) => current.filter((outfit) => outfit.id !== deleteTarget.id));
-      setDeleteTarget(null);
-    } catch (error) {
-      Alert.alert(t('common.errorTitle'), String(error instanceof Error ? error.message : error));
+      const results = await Promise.allSettled(ids.map((id) => deleteOutfit(id)));
+      const failedIds = new Set(
+        ids.filter((_, index) => results[index].status === 'rejected')
+      );
+
+      setOutfits((current) => current.filter((outfit) => !ids.includes(outfit.id) || failedIds.has(outfit.id)));
+      setBulkDeleteConfirmVisible(false);
+      setSelectionMode(false);
+      setSelectedIds(new Set());
+
+      if (failedIds.size > 0) {
+        const firstFailure = results.find(
+          (result): result is PromiseRejectedResult => result.status === 'rejected'
+        );
+        const error = firstFailure?.reason;
+        alert(t('common.errorTitle'), String(error instanceof Error ? error.message : error));
+      }
+    } finally {
+      setIsDeleting(false);
     }
-    setIsDeleting(false);
   }
 
   return (
-    <View style={styles.screen}>
-      <ScrollView contentContainerStyle={styles.content}>
+    <ScreenBackground style={styles.screen}>
+      <ScrollView
+        contentContainerStyle={[styles.content, selectionMode && styles.contentWithSelectionBar]}
+      >
         <View style={styles.header}>
           <View>
             <Text style={styles.title}>{t('outfits.title')}</Text>
             <Text style={styles.count}>{t('outfits.count', { count: outfits.length })}</Text>
           </View>
 
-          <TouchableOpacity
-            style={styles.addButton}
-            onPress={() => router.push('/create-outfit')}
-          >
-            <Text style={styles.addButtonGlyph}>+</Text>
-          </TouchableOpacity>
+          <View style={styles.headerActions}>
+            {outfits.length > 0 && (
+              <TouchableOpacity onPress={toggleSelectionMode}>
+                <Text style={styles.selectToggleText}>
+                  {t(selectionMode ? 'dressing.selectDone' : 'dressing.select')}
+                </Text>
+              </TouchableOpacity>
+            )}
+
+            <TouchableOpacity
+              style={styles.addButton}
+              onPress={() => router.push('/create-outfit')}
+            >
+              <Text style={styles.addButtonGlyph}>+</Text>
+            </TouchableOpacity>
+          </View>
         </View>
 
         {outfits.length === 0 ? (
@@ -163,8 +235,10 @@ export default function TenuesScreen() {
                   outfit={outfit}
                   items={items}
                   cardWidth={cardWidth}
-                  onPress={() => router.push(`/create-outfit?id=${outfit.id}`)}
-                  onLongPress={() => setDeleteTarget(outfit)}
+                  selectionMode={selectionMode}
+                  isSelected={selectedIds.has(outfit.id)}
+                  onPress={() => handleCardPress(outfit)}
+                  onLongPress={() => handleCardLongPress(outfit)}
                 />
               );
             })}
@@ -172,24 +246,49 @@ export default function TenuesScreen() {
         )}
       </ScrollView>
 
+      {selectionMode && (
+        <View style={styles.selectionBar}>
+          <TouchableOpacity onPress={toggleSelectAll}>
+            <Text style={styles.selectionBarCount}>
+              {selectedIds.size > 0
+                ? tPlural('dressing.selectedCount', selectedIds.size)
+                : t('dressing.selectAll')}
+            </Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            disabled={selectedIds.size === 0}
+            onPress={() => setBulkDeleteConfirmVisible(true)}
+          >
+            <Text
+              style={[
+                styles.selectionBarButtonTextDestructive,
+                selectedIds.size === 0 && styles.selectionBarButtonTextDisabled,
+              ]}
+            >
+              {t('dressing.bulkDelete')}
+            </Text>
+          </TouchableOpacity>
+        </View>
+      )}
+
       <ConfirmModal
-        visible={deleteTarget !== null}
-        title={t('createOutfit.deleteConfirmTitle')}
-        message={t('createOutfit.deleteConfirmMessage', { name: deleteTarget?.name ?? '' })}
-        confirmLabel={isDeleting ? t('createOutfit.deleting') : t('common.delete')}
+        visible={bulkDeleteConfirmVisible}
+        title={tPlural('outfits.bulkDeleteConfirmTitle', selectedIds.size)}
+        message={t('dressing.bulkDeleteConfirmMessage')}
+        confirmLabel={isDeleting ? t('createOutfit.deleting') : t('dressing.bulkDelete')}
         cancelLabel={t('common.cancel')}
         destructive
-        onConfirm={confirmDeleteOutfit}
-        onCancel={() => setDeleteTarget(null)}
+        onConfirm={confirmBulkDelete}
+        onCancel={() => setBulkDeleteConfirmVisible(false)}
       />
-    </View>
+    </ScreenBackground>
   );
 }
 
 const createStyles = (VestroColors: AppColors) => StyleSheet.create({
   screen: {
     flex: 1,
-    backgroundColor: VestroColors.background,
   },
   content: {
     flexGrow: 1,
@@ -197,10 +296,25 @@ const createStyles = (VestroColors: AppColors) => StyleSheet.create({
     paddingHorizontal: 20,
     paddingBottom: 40,
   },
+  contentWithSelectionBar: {
+    paddingBottom: 90,
+  },
   header: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'flex-start',
+  },
+  headerActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 16,
+  },
+  selectToggleText: {
+    fontFamily: VestroFonts.sansMedium,
+    fontSize: 11,
+    letterSpacing: 1,
+    textTransform: 'uppercase',
+    color: VestroColors.ink,
   },
   title: {
     fontFamily: VestroFonts.serifSemiBoldItalic,
@@ -255,9 +369,13 @@ const createStyles = (VestroColors: AppColors) => StyleSheet.create({
     gap: GRID_GAP,
   },
   card: {},
+  // No aspectRatio here on purpose: OutfitPreview now renders at the real
+  // 340x420 board proportions (see outfit-canvas.tsx) instead of being
+  // squeezed into a square, so this wrapper just lets that height happen
+  // naturally instead of fighting it with a mismatched fixed ratio.
   previewWrap: {
     width: '100%',
-    aspectRatio: 1,
+    position: 'relative',
   },
   itemName: {
     marginTop: 9,
@@ -272,5 +390,59 @@ const createStyles = (VestroColors: AppColors) => StyleSheet.create({
     letterSpacing: 1,
     textTransform: 'uppercase',
     color: VestroColors.muted,
+  },
+  checkBadge: {
+    position: 'absolute',
+    top: 8,
+    right: 8,
+    zIndex: 1,
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    backgroundColor: 'transparent',
+    borderWidth: 1.5,
+    borderColor: VestroColors.border,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  checkBadgeActive: {
+    backgroundColor: VestroColors.ink,
+    borderColor: VestroColors.ink,
+  },
+  checkGlyph: {
+    fontFamily: VestroFonts.sansSemiBold,
+    fontSize: 12,
+    color: VestroColors.buttonText,
+  },
+  selectionBar: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    bottom: 0,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 20,
+    paddingVertical: 16,
+    backgroundColor: VestroColors.surface,
+    borderTopWidth: 1,
+    borderTopColor: VestroColors.border,
+  },
+  selectionBarCount: {
+    fontFamily: VestroFonts.sansMedium,
+    fontSize: 12,
+    letterSpacing: 0.5,
+    color: VestroColors.ink,
+  },
+  selectionBarButtonTextDestructive: {
+    fontFamily: VestroFonts.sansSemiBold,
+    fontSize: 12,
+    letterSpacing: 0.5,
+    textTransform: 'uppercase',
+    color: '#B2554A',
+  },
+  selectionBarButtonTextDisabled: {
+    color: VestroColors.muted,
+    opacity: 0.5,
   },
 });

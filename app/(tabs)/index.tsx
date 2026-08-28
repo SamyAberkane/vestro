@@ -2,31 +2,48 @@ import * as Location from 'expo-location';
 import { router, useFocusEffect } from 'expo-router';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
-  Alert,
-  Image,
   LayoutChangeEvent,
   ScrollView,
   StyleSheet,
   Switch,
   Text,
   TouchableOpacity,
+  useWindowDimensions,
   View,
 } from 'react-native';
 
 import { useAuth } from '@/auth/context';
+import { ConfirmModal } from '@/components/confirm-modal';
 import { LanguagePickerModal } from '@/components/language-picker-modal';
 import { CANVAS_REFERENCE_SIZE, CanvasLayout, OutfitCanvas, OutfitPreview } from '@/components/outfit-canvas';
 import { SaveOutfitModal } from '@/components/save-outfit-modal';
+import { ScreenBackground } from '@/components/screen-background';
+import { StickerImage } from '@/components/sticker-image';
 import { AppColors, VestroCategories, VestroFonts } from '@/constants/theme';
 import { useI18n } from '@/i18n/context';
 import { LANGUAGES, MONTHS } from '@/i18n/translations';
-import { fetchActiveLook, saveActiveLook } from '@/lib/active-look';
-import { fetchClothingItems } from '@/lib/clothing';
+import { fetchActiveLook, saveActiveLook, subscribeToActiveLookChanged } from '@/lib/active-look';
+import { alert } from '@/lib/alert';
+import { fetchClothingItems, fetchClothingItemsByIds } from '@/lib/clothing';
 import { fetchOutfits, insertOutfit } from '@/lib/outfits';
-import { supabase } from '@/lib/supabase';
-import { useAppTheme } from '@/theme/context';
-import type { ActiveLook, ClothingItem, Outfit } from '@/types/clothing';
+import { type ColorScheme, useAppTheme } from '@/theme/context';
+import type { ClothingItem, Outfit } from '@/types/clothing';
 import { CurrentWeather, fetchCurrentWeather } from '@/utils/weather';
+
+// The icon shown is the theme a tap switches TO, not the current one —
+// light shows the moon you're about to get, dark shows the next gem theme,
+// amethyst shows the sun that brings you back to light.
+const NEXT_SCHEME: Record<ColorScheme, ColorScheme> = {
+  light: 'dark',
+  dark: 'amethyst',
+  amethyst: 'light',
+};
+
+const SCHEME_ICON: Record<ColorScheme, string> = {
+  light: '🌙',
+  dark: '💎',
+  amethyst: '☀️',
+};
 
 function dayOfYear(date: Date) {
   const start = new Date(date.getFullYear(), 0, 0);
@@ -35,6 +52,11 @@ function dayOfYear(date: Date) {
 }
 
 const RECENT_OUTFIT_PREVIEW_SIZE = 96;
+// Mirrors styles.screen's paddingHorizontal and styles.content's maxWidth
+// below — shared so the fallback-width calc in the resize effect can never
+// silently drift out of sync with what those styles actually render.
+const SCREEN_HORIZONTAL_PADDING = 20;
+const CONTENT_MAX_WIDTH = 480;
 
 export default function HomeScreen() {
   const { t, tCategory, tPlural, language } = useI18n();
@@ -45,13 +67,20 @@ export default function HomeScreen() {
   const [isLoaded, setIsLoaded] = useState(false);
   const [selected, setSelected] = useState<Record<string, number[]>>({});
   const [layout, setLayout] = useState<Record<number, CanvasLayout>>({});
-  const [activeCategory, setActiveCategory] = useState('Hauts');
+  const [activeCategories, setActiveCategories] = useState<string[]>(['Hauts']);
   const [canvasSize, setCanvasSize] = useState({ width: 0, height: 0 });
   const [showPrice, setShowPrice] = useState(false);
   const [weather, setWeather] = useState<CurrentWeather | null>(null);
   const [languagePickerVisible, setLanguagePickerVisible] = useState(false);
   const [saveModalVisible, setSaveModalVisible] = useState(false);
+  const [confirmClearVisible, setConfirmClearVisible] = useState(false);
   const [recentOutfits, setRecentOutfits] = useState<Outfit[]>([]);
+  const { width: windowWidth, height: windowHeight } = useWindowDimensions();
+  // null = not loaded yet (see isActiveLookLoaded below) — distinguishes
+  // "we don't know yet" from "you have no active look", so the worn/unsaved
+  // badge never flashes the wrong state before the first fetch resolves.
+  const [activeLookItemIds, setActiveLookItemIds] = useState<number[] | null>(null);
+  const [isActiveLookLoaded, setIsActiveLookLoaded] = useState(false);
 
   function formatIssueDate(date: Date) {
     const day = date.getDate().toString().padStart(2, '0');
@@ -78,56 +107,72 @@ export default function HomeScreen() {
     loadWeather();
   }, []);
 
+  // Loads the saved active look ONCE per app session (mount) plus whenever
+  // it's explicitly changed elsewhere (see subscribeToActiveLookChanged) —
+  // deliberately NOT on every tab focus. This board used to reload from the
+  // server every time this tab regained focus, silently discarding whatever
+  // in-progress selection/layout the user hadn't saved yet the moment they
+  // so much as glanced at another tab. Self-contained (fetches clothes
+  // itself rather than reading the `clothes` state) so it's never at the
+  // mercy of that state's own separate, focus-driven refresh below.
+  const loadActiveLook = useCallback(async () => {
+    try {
+      const look = await fetchActiveLook();
+
+      if (look) {
+        const items = look.itemIds.length > 0 ? await fetchClothingItemsByIds(look.itemIds) : [];
+        const itemById = new Map(items.map((item) => [item.id, item]));
+        const initialSelected: Record<string, number[]> = {};
+
+        look.itemIds.forEach((itemId) => {
+          const item = itemById.get(itemId);
+          if (item) {
+            initialSelected[item.category] = [
+              ...(initialSelected[item.category] ?? []),
+              item.id,
+            ];
+          }
+        });
+
+        setSelected(initialSelected);
+        setLayout(look.layout ?? {});
+        setActiveLookItemIds(look.itemIds);
+      } else {
+        setActiveLookItemIds([]);
+      }
+    } catch (error) {
+      alert(t('common.errorTitle'), String(error instanceof Error ? error.message : error));
+    }
+
+    setIsActiveLookLoaded(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    loadActiveLook();
+  }, [loadActiveLook]);
+
+  useEffect(() => subscribeToActiveLookChanged(loadActiveLook), [loadActiveLook]);
+
+  // Everything else (wardrobe contents, recent outfits) still refreshes on
+  // every focus — it's fine, even desirable, for that to reflect changes
+  // made on other tabs; it's only the active look above that must NOT be
+  // silently re-pulled from the server while the user might be mid-edit.
   useFocusEffect(
     useCallback(() => {
-      async function loadData() {
+      async function loadFocusData() {
         try {
           const parsedClothes = await fetchClothingItems();
           setClothes(parsedClothes);
-
-          const {
-            data: { user },
-          } = await supabase.auth.getUser();
-          const { data: entitlement } = user
-            ? await supabase
-                .from('premium_entitlements')
-                .select('*')
-                .eq('user_id', user.id)
-                .maybeSingle()
-            : { data: null };
-
-          console.log('[Vestro] Compte connecté:', user);
-          console.log('[Vestro] Abonnement:', entitlement);
-          console.log(`[Vestro] Vêtements (${parsedClothes.length}):`, parsedClothes);
-
-          const look: ActiveLook | null = await fetchActiveLook();
-
-          if (look) {
-            const initialSelected: Record<string, number[]> = {};
-
-            look.itemIds.forEach((itemId) => {
-              const item = parsedClothes.find((c) => c.id === itemId);
-              if (item) {
-                initialSelected[item.category] = [
-                  ...(initialSelected[item.category] ?? []),
-                  item.id,
-                ];
-              }
-            });
-
-            setSelected(initialSelected);
-            setLayout(look.layout ?? {});
-          }
-
           setRecentOutfits(await fetchOutfits());
         } catch (error) {
-          Alert.alert(t('common.errorTitle'), String(error instanceof Error ? error.message : error));
+          alert(t('common.errorTitle'), String(error instanceof Error ? error.message : error));
         }
 
         setIsLoaded(true);
       }
 
-      loadData();
+      loadFocusData();
     }, [])
   );
 
@@ -139,11 +184,12 @@ export default function HomeScreen() {
   // otherwise a category tab can disappear/reappear as you add or remove
   // items, which reads as items "missing" from the picker.
   const availableCategories: string[] = [...VestroCategories];
-  const currentCategory = availableCategories.includes(activeCategory)
-    ? activeCategory
-    : availableCategories[0];
-  const currentCategoryItems = ownedClothes.filter(
-    (item) => item.category === currentCategory
+  // Several tabs can be active at once (see toggleActiveCategory) so you can
+  // browse tops and bottoms together instead of round-tripping through one
+  // category at a time — the row below just shows every owned item whose
+  // category is in this set, in whatever order they're already fetched in.
+  const currentCategoryItems = ownedClothes.filter((item) =>
+    activeCategories.includes(item.category)
   );
 
   const selectedItems = Object.values(selected)
@@ -151,12 +197,29 @@ export default function HomeScreen() {
     .map((itemId) => clothes.find((item) => item.id === itemId))
     .filter((item): item is ClothingItem => Boolean(item));
 
+  // Same set of items as what's actually saved as today's active look —
+  // ignores exact board positions on purpose, since "worn" is about which
+  // clothes, not their pixel arrangement. `activeLookItemIds` is null until
+  // the very first load resolves, so this can't flash "unsaved" before then.
+  const isCurrentlyWorn =
+    activeLookItemIds !== null &&
+    activeLookItemIds.length === selectedItems.length &&
+    activeLookItemIds.every((id) => selectedItems.some((item) => item.id === id));
+
   const recentOutfitsWithItems = recentOutfits.slice(0, 8).map((outfit) => ({
     outfit,
     items: outfit.itemIds
       .map((itemId) => clothes.find((item) => item.id === itemId))
       .filter((item): item is ClothingItem => Boolean(item)),
   }));
+
+  function toggleActiveCategory(category: string) {
+    setActiveCategories((current) =>
+      current.includes(category)
+        ? current.filter((existing) => existing !== category)
+        : [...current, category]
+    );
+  }
 
   function toggleSelect(category: string, itemId: number) {
     setSelected((current) => {
@@ -167,6 +230,13 @@ export default function HomeScreen() {
 
       return { ...current, [category]: nextIds };
     });
+  }
+
+  // Empties the board without touching `layout` — an item added back later
+  // still remembers where it used to sit.
+  function clearBoard() {
+    setSelected({});
+    setConfirmClearVisible(false);
   }
 
   // Merges onto whatever's already saved for this item rather than
@@ -189,6 +259,39 @@ export default function HomeScreen() {
     setCanvasSize({ width, height });
   }
 
+  // onLayout normally refires whenever this view's own size changes, but
+  // iPad multitasking (Split View, Slide Over) and rotation don't always
+  // trigger that reliably — when it doesn't, the board keeps rendering at
+  // its old size while its own overflow: hidden frame is now sized (via
+  // width/height props below) for a window that no longer exists, cutting
+  // off whatever no longer fits, most often its bottom. Blanking canvasSize
+  // on every window resize forces the canvas to stay hidden until a fresh
+  // onLayout actually lands, instead of ever risking staying stuck at a
+  // stale size.
+  useEffect(() => {
+    setCanvasSize({ width: 0, height: 0 });
+
+    // Belt-and-suspenders for the exact failure mode this effect exists to
+    // work around: if onLayout genuinely never refires after this resize,
+    // don't leave the board hidden forever either — after a brief grace
+    // period for the real onLayout to land first, fall back to a width
+    // computed straight from the window itself (same formula the actual
+    // layout resolves to, given screen/content's fixed padding above).
+    const fallback = setTimeout(() => {
+      setCanvasSize((current) => {
+        if (current.width > 0) return current;
+        const width = Math.min(
+          windowWidth - SCREEN_HORIZONTAL_PADDING * 2,
+          CONTENT_MAX_WIDTH
+        );
+        const height = Math.round((width * CANVAS_REFERENCE_SIZE.height) / CANVAS_REFERENCE_SIZE.width);
+        return { width, height };
+      });
+    }, 400);
+
+    return () => clearTimeout(fallback);
+  }, [windowWidth, windowHeight]);
+
   function currentLookPayload() {
     const itemIds = selectedItems.map((item) => item.id);
     const itemIdSet = new Set(itemIds);
@@ -201,21 +304,21 @@ export default function HomeScreen() {
 
   async function wearToday() {
     if (selectedItems.length === 0) {
-      Alert.alert(t('common.emptyOutfitTitle'), t('common.emptyOutfitMessage'));
+      alert(t('common.emptyOutfitTitle'), t('common.emptyOutfitMessage'));
       return;
     }
 
     try {
       await saveActiveLook(currentLookPayload());
-      Alert.alert(t('home.wornTitle'), t('home.wornMessage'));
+      alert(t('home.wornTitle'), t('home.wornMessage'));
     } catch (error) {
-      Alert.alert(t('common.errorTitle'), String(error instanceof Error ? error.message : error));
+      alert(t('common.errorTitle'), String(error instanceof Error ? error.message : error));
     }
   }
 
   function saveOutfit() {
     if (selectedItems.length === 0) {
-      Alert.alert(t('common.emptyOutfitTitle'), t('common.emptyOutfitMessage'));
+      alert(t('common.emptyOutfitTitle'), t('common.emptyOutfitMessage'));
       return;
     }
 
@@ -227,23 +330,23 @@ export default function HomeScreen() {
 
     try {
       await insertOutfit({ name, ...currentLookPayload(), showPrice });
-      Alert.alert(t('home.savedTitle'), t('home.savedMessage'));
+      alert(t('home.savedTitle'), t('home.savedMessage'));
     } catch (error) {
-      Alert.alert(t('common.errorTitle'), String(error instanceof Error ? error.message : error));
+      alert(t('common.errorTitle'), String(error instanceof Error ? error.message : error));
     }
   }
 
   const today = new Date();
 
   return (
-    <View style={styles.screen}>
+    <ScreenBackground style={styles.screen}>
       <ScrollView
         style={styles.scroll}
         contentContainerStyle={styles.content}
         showsVerticalScrollIndicator={false}
       >
       <View style={styles.topBar}>
-        <Text style={styles.logo}>Vestro</Text>
+        <Text style={styles.logo} numberOfLines={2}>Crystal AI Closet</Text>
 
         <View style={styles.issueBlock}>
           <View style={styles.topBarIcons}>
@@ -253,12 +356,12 @@ export default function HomeScreen() {
               </Text>
             </TouchableOpacity>
             <TouchableOpacity
-              onPress={() => setScheme(scheme === 'dark' ? 'light' : 'dark')}
+              onPress={() => setScheme(NEXT_SCHEME[scheme])}
               hitSlop={8}
               accessibilityRole="button"
               accessibilityLabel={t('account.darkMode')}
             >
-              <Text style={styles.languageFlag}>{scheme === 'dark' ? '☀️' : '🌙'}</Text>
+              <Text style={styles.languageFlag}>{SCHEME_ICON[scheme]}</Text>
             </TouchableOpacity>
           </View>
           <Text style={styles.issueText}>
@@ -284,7 +387,7 @@ export default function HomeScreen() {
       <Text style={styles.title}>{t('home.title')}</Text>
 
       <View style={styles.canvasArea} onLayout={handleCanvasAreaLayout}>
-        {isLoaded && canvasSize.height > 0 && (
+        {isLoaded && isActiveLookLoaded && canvasSize.height > 0 && (
           <OutfitCanvas
             items={selectedItems}
             layout={layout}
@@ -307,6 +410,15 @@ export default function HomeScreen() {
         />
       </View>
 
+      {selectedItems.length > 0 && (
+        <TouchableOpacity
+          style={styles.clearBoardButton}
+          onPress={() => setConfirmClearVisible(true)}
+        >
+          <Text style={styles.clearBoardText}>{t('createOutfit.clearBoard')}</Text>
+        </TouchableOpacity>
+      )}
+
       <ScrollView
         horizontal
         showsHorizontalScrollIndicator={false}
@@ -314,12 +426,12 @@ export default function HomeScreen() {
         contentContainerStyle={styles.categoryTabs}
       >
         {availableCategories.map((category) => {
-          const active = category === currentCategory;
+          const active = activeCategories.includes(category);
 
           return (
             <TouchableOpacity
               key={category}
-              onPress={() => setActiveCategory(category)}
+              onPress={() => toggleActiveCategory(category)}
               style={active ? styles.categoryTabActive : styles.categoryTab}
             >
               <Text style={active ? styles.categoryTabTextActive : styles.categoryTabText}>
@@ -337,13 +449,13 @@ export default function HomeScreen() {
         contentContainerStyle={styles.itemRow}
       >
         {currentCategoryItems.map((item) => {
-          const isSelected = selected[currentCategory]?.includes(item.id) ?? false;
+          const isSelected = selected[item.category]?.includes(item.id) ?? false;
 
           return (
             <TouchableOpacity
               key={item.id}
               style={styles.thumbnailWrap}
-              onPress={() => toggleSelect(currentCategory, item.id)}
+              onPress={() => toggleSelect(item.category, item.id)}
             >
               <View
                 style={[
@@ -352,11 +464,7 @@ export default function HomeScreen() {
                 ]}
               >
                 {item.image && (
-                  <Image
-                    source={{ uri: item.image }}
-                    style={styles.thumbnailImage}
-                    resizeMode="cover"
-                  />
+                  <StickerImage uri={item.image} containerStyle={styles.thumbnailImage} resizeMode="cover" />
                 )}
               </View>
               <View
@@ -371,9 +479,16 @@ export default function HomeScreen() {
       </ScrollView>
 
       <View style={styles.actions}>
-        <TouchableOpacity style={styles.wearButton} onPress={wearToday}>
-          <Text style={styles.wearButtonText}>{t('home.wearButton')}</Text>
-        </TouchableOpacity>
+        {isActiveLookLoaded && isCurrentlyWorn ? (
+          <View style={styles.wornBanner}>
+            <Text style={styles.wornBannerCheck}>✓</Text>
+            <Text style={styles.wornBannerText}>{t('home.currentlyWornBadge')}</Text>
+          </View>
+        ) : (
+          <TouchableOpacity style={styles.wearButton} onPress={wearToday}>
+            <Text style={styles.wearButtonText}>{t('home.wearButton')}</Text>
+          </TouchableOpacity>
+        )}
 
         <TouchableOpacity style={styles.saveLink} onPress={saveOutfit}>
           <Text style={styles.saveLinkText}>{t('home.saveOutfitLink')}</Text>
@@ -435,16 +550,26 @@ export default function HomeScreen() {
         onConfirm={confirmSaveOutfit}
         onCancel={() => setSaveModalVisible(false)}
       />
-    </View>
+
+      <ConfirmModal
+        visible={confirmClearVisible}
+        title={t('createOutfit.clearBoardConfirmTitle')}
+        message={t('createOutfit.clearBoardConfirmMessage')}
+        confirmLabel={t('createOutfit.clearBoard')}
+        cancelLabel={t('common.cancel')}
+        destructive
+        onConfirm={clearBoard}
+        onCancel={() => setConfirmClearVisible(false)}
+      />
+    </ScreenBackground>
   );
 }
 
 const createStyles = (VestroColors: AppColors) => StyleSheet.create({
   screen: {
     flex: 1,
-    backgroundColor: VestroColors.background,
     paddingTop: 54,
-    paddingHorizontal: 20,
+    paddingHorizontal: SCREEN_HORIZONTAL_PADDING,
     paddingBottom: 10,
   },
   scroll: {
@@ -463,7 +588,7 @@ const createStyles = (VestroColors: AppColors) => StyleSheet.create({
     // comfortable, phone-like width and centers it in the extra space
     // instead, same as the create-outfit screen's board.
     width: '100%',
-    maxWidth: 480,
+    maxWidth: CONTENT_MAX_WIDTH,
     alignSelf: 'center',
   },
   topBar: {
@@ -472,9 +597,12 @@ const createStyles = (VestroColors: AppColors) => StyleSheet.create({
     justifyContent: 'space-between',
   },
   logo: {
+    flexShrink: 1,
+    marginRight: 12,
     fontFamily: VestroFonts.serifSemiBoldItalic,
-    fontSize: 26,
-    letterSpacing: 0.5,
+    fontSize: 19,
+    lineHeight: 22,
+    letterSpacing: 0.2,
     color: VestroColors.ink,
   },
   issueBlock: {
@@ -539,6 +667,18 @@ const createStyles = (VestroColors: AppColors) => StyleSheet.create({
     fontFamily: VestroFonts.sansMedium,
     fontSize: 13,
     color: VestroColors.ink,
+  },
+  clearBoardButton: {
+    marginTop: 10,
+    alignSelf: 'flex-start',
+  },
+  clearBoardText: {
+    fontFamily: VestroFonts.sansMedium,
+    fontSize: 11,
+    letterSpacing: 1,
+    textTransform: 'uppercase',
+    color: VestroColors.muted,
+    textDecorationLine: 'underline',
   },
   categoryTabsScroll: {
     flexGrow: 0,
@@ -625,6 +765,31 @@ const createStyles = (VestroColors: AppColors) => StyleSheet.create({
     fontFamily: VestroFonts.sansSemiBold,
     fontSize: 11,
     letterSpacing: 2.5,
+    textTransform: 'uppercase',
+    color: VestroColors.buttonText,
+  },
+  // Replaces the wear button entirely once today's board matches the saved
+  // active look — bigger than the button it replaces (not smaller/fainter),
+  // a plain View with no press handler at all, so there's nothing to tap
+  // and no ambiguity that this is a state, not an action to repeat.
+  wornBanner: {
+    width: '100%',
+    height: 60,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 10,
+    backgroundColor: VestroColors.accent,
+  },
+  wornBannerCheck: {
+    fontFamily: VestroFonts.sansBold,
+    fontSize: 18,
+    color: VestroColors.buttonText,
+  },
+  wornBannerText: {
+    fontFamily: VestroFonts.sansSemiBold,
+    fontSize: 13,
+    letterSpacing: 2,
     textTransform: 'uppercase',
     color: VestroColors.buttonText,
   },

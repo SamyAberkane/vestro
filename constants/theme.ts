@@ -75,6 +75,27 @@ export const VestroColorsDark = {
   tints,
 };
 
+// "Somptueux" third theme — a cosmic blue gradient (deep indigo through
+// blue to diamond-cyan, plus a faint star scatter — see ScreenBackground)
+// rather than a flat fill, the user asked for as an alternative to plain
+// light/dark, independent of system light/dark and only ever chosen
+// explicitly via the theme toggle. `background` stays a flat color (the
+// gradient's own darkest stop) as a fallback for anywhere ScreenBackground
+// isn't used yet — never literally rendered as the theme's real background.
+export const VestroAmethystGradient = ['#070B1F', '#122A5E', '#1FA8C7'] as const;
+
+export const VestroColorsAmethyst = {
+  background: '#070B1F',
+  ink: '#EAF6FC',
+  muted: '#7E93B0',
+  border: '#22345A',
+  surface: '#152742',
+  accent: '#5AC8FA',
+  frame: '#24406B',
+  buttonText: '#070B1F',
+  tints,
+};
+
 export type AppColors = typeof VestroColorsLight;
 
 // Fixed (non-reactive) palette for the outfit "board": it always renders as a

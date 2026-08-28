@@ -7,7 +7,9 @@ const BUCKET = 'clothing-images';
 const SIGNED_URL_TTL_SECONDS = 60 * 60;
 
 function extensionForMimeType(mimeType: string): string {
-  return mimeType === 'image/png' ? 'png' : 'jpg';
+  if (mimeType === 'image/png') return 'png';
+  if (mimeType === 'image/webp') return 'webp';
+  return 'jpg';
 }
 
 // Clothing photos are stored as data URIs in memory (see utils/remove-background.ts)
@@ -21,8 +23,13 @@ export async function uploadClothingImage(userId: string, dataUri: string): Prom
     .from(BUCKET)
     .upload(path, toByteArray(base64), { contentType: mimeType, upsert: false });
 
-  if (error) throw error;
+  if (error) throw new Error(error.message);
   return path;
+}
+
+export async function deleteClothingImage(path: string): Promise<void> {
+  const { error } = await supabase.storage.from(BUCKET).remove([path]);
+  if (error) throw new Error(error.message);
 }
 
 // The bucket is private, so every screen that renders images fetches short-lived
@@ -35,7 +42,7 @@ export async function getSignedImageUrls(paths: string[]): Promise<Record<string
     .from(BUCKET)
     .createSignedUrls(uniquePaths, SIGNED_URL_TTL_SECONDS);
 
-  if (error) throw error;
+  if (error) throw new Error(error.message);
 
   const result: Record<string, string> = {};
   data?.forEach((entry) => {

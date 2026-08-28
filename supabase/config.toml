@@ -1,0 +1,8 @@
+[functions.verify-purchase]
+verify_jwt = true
+
+[functions.delete-account]
+verify_jwt = true
+
+[functions.edit-clothing-photo]
+verify_jwt = true

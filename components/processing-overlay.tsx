@@ -236,6 +236,7 @@ export function ProcessingOverlay({ visible, imageUri, stepIndex = 1, stepCount 
         </View>
 
         <Text style={styles.subtext}>{t('processing.subtext')}</Text>
+        <Text style={styles.creditCost}>💎 {t('processing.creditCost')}</Text>
       </View>
     </View>
   );
@@ -355,6 +356,14 @@ const createStyles = (VestroColors: AppColors) => StyleSheet.create({
     fontSize: 10,
     lineHeight: 14,
     color: VestroColors.muted,
+    textAlign: 'center',
+  },
+  creditCost: {
+    marginTop: 8,
+    fontFamily: VestroFonts.sansSemiBold,
+    fontSize: 11,
+    letterSpacing: 0.3,
+    color: VestroColors.ink,
     textAlign: 'center',
   },
 });

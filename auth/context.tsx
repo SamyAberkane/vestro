@@ -48,7 +48,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       token: credential.identityToken,
     });
 
-    if (error) throw error;
+    if (error) throw new Error(error.message);
 
     if (credential.fullName?.givenName || credential.fullName?.familyName) {
       await supabase.auth.updateUser({

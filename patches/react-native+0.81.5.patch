@@ -1,0 +1,54 @@
+diff --git a/node_modules/react-native/ReactCommon/react/nativemodule/core/platform/ios/ReactCommon/RCTTurboModule.mm b/node_modules/react-native/ReactCommon/react/nativemodule/core/platform/ios/ReactCommon/RCTTurboModule.mm
+index 2a67797..d89d19d 100644
+--- a/node_modules/react-native/ReactCommon/react/nativemodule/core/platform/ios/ReactCommon/RCTTurboModule.mm
++++ b/node_modules/react-native/ReactCommon/react/nativemodule/core/platform/ios/ReactCommon/RCTTurboModule.mm
+@@ -371,7 +371,16 @@ id ObjCTurboModule::performMethodInvocation(
+         // See https://github.com/reactwg/react-native-new-architecture/discussions/276#discussioncomment-12567155
+         throw convertNSExceptionToJSError(runtime, exception, std::string{moduleName}, methodNameStr);
+       } else {
+-        @throw exception;
++        // Same iOS 26 issue as performVoidMethodInvocation below: re-throwing
++        // here isn't reliably catchable on this background dispatch queue
++        // either, so it's swallowed (logged, not crashed) rather than risk
++        // the same SIGABRT for an async call. See
++        // https://github.com/facebook/react-native/issues/54859.
++        NSLog(
++            @"[RCTTurboModule] %@.%@ raised an uncaught exception on an async call — swallowed to avoid the iOS 26 SIGABRT: %@",
++            moduleName ? [NSString stringWithUTF8String:moduleName] : @"?",
++            methodName ? [NSString stringWithUTF8String:methodName] : @"?",
++            exception);
+       }
+     } @finally {
+       [retainedObjectsForInvocation removeAllObjects];
+@@ -435,7 +444,30 @@ void ObjCTurboModule::performVoidMethodInvocation(
+     @try {
+       [inv invokeWithTarget:strongModule];
+     } @catch (NSException *exception) {
+-      throw convertNSExceptionToJSError(runtime, exception, std::string{moduleName}, methodNameStr);
++      if (shouldVoidMethodsExecuteSync_) {
++        // Same guard as performMethodInvocation above: converting to a JSError
++        // and throwing it as a C++ exception is only safe on the sync path.
++        throw convertNSExceptionToJSError(runtime, exception, std::string{moduleName}, methodNameStr);
++      } else {
++        // On iOS 26, neither throwing a converted JSError NOR re-throwing the
++        // original NSException here is actually catchable for an async void
++        // method (the overwhelming majority of real TurboModule calls — every
++        // Promise-based method is "void" at this ABI level): both still crash
++        // the whole app with SIGABRT, because nothing downstream of this
++        // background dispatch queue can catch either kind of exception once
++        // it leaves this Objective-C @catch block. Logging and swallowing it
++        // here is the only way to guarantee this can never crash the app —
++        // the cost is that the JS side never sees this specific failure (its
++        // Promise just never settles) instead of getting a clean rejection,
++        // but that's a vastly better failure mode than a full app crash.
++        // See https://github.com/reactwg/react-native-new-architecture/discussions/276#discussioncomment-12567155
++        // and https://github.com/facebook/react-native/issues/54859.
++        NSLog(
++            @"[RCTTurboModule] %@.%@ raised an uncaught exception on an async void call — swallowed to avoid the iOS 26 SIGABRT: %@",
++            moduleName ? [NSString stringWithUTF8String:moduleName] : @"?",
++            methodName ? [NSString stringWithUTF8String:methodName] : @"?",
++            exception);
++      }
+     } @finally {
+       [retainedObjectsForInvocation removeAllObjects];
+     }

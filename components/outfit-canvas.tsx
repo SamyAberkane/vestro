@@ -1,10 +1,11 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Image, StyleSheet, Text, View } from 'react-native';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import Animated, {
   runOnJS,
   useAnimatedStyle,
   useSharedValue,
+  withSpring,
 } from 'react-native-reanimated';
 
 import { VestroColors, VestroFonts } from '@/constants/theme';
@@ -122,20 +123,46 @@ function looksLegacy(raw: { x: number; y: number }): boolean {
   return Math.abs(raw.x) > 1.5 || Math.abs(raw.y) > 1.5;
 }
 
-// A saved fraction can still fall outside 0..1 (dragged past an edge, or a
-// stack offset pushing past 1) — clamping in pixel space keeps at least half
-// the item on-screen no matter what, so nothing can ever be invisible.
-const CLAMP_MARGIN = ITEM_SIZE / 2;
-const CLAMP_MAX_X = Math.max(CANVAS_REFERENCE_SIZE.width - ITEM_SIZE + CLAMP_MARGIN, -CLAMP_MARGIN);
-const CLAMP_MAX_Y = Math.max(CANVAS_REFERENCE_SIZE.height - ITEM_SIZE + CLAMP_MARGIN, -CLAMP_MARGIN);
+// A large item (jeans, a dress) at a size the user actually wants often
+// can't fit fully within the board's fixed proportions without being shrunk
+// smaller than they'd like — full containment fought that. Up to half of an
+// item's own width/height is now allowed to hang off any edge (clipped by
+// the frame's own overflow: hidden, same as a cropped product photo — not a
+// bug, a normal moodboard interaction), same on every board size including
+// a tablet's landscape one, since this works in the fixed reference space
+// shared by every board shape. Only a runaway drag that would push an item
+// fully out of view is still stopped.
+const MAX_OVERFLOW_FRACTION = 0.5;
 
+// A saved fraction can still fall outside 0..1 (dragged past an edge, a
+// stack offset pushing past 1, or a resize that grew the item past where it
+// used to fit) — this pulls it back within the allowed overflow range, in
+// pixel space, so an item can never end up fully off-board with no way to
+// find it again.
 function clampToCanvas(itemLayout: ResolvedItemLayout): ResolvedItemLayout {
+  const size = ITEM_SIZE * itemLayout.scale;
+  const overflow = size * MAX_OVERFLOW_FRACTION;
+  // x/y store the top-left of the item's *unscaled* (ITEM_SIZE) box — the
+  // scale transform below then grows it around its own center, not around
+  // x/y, so a scaled-up item's visual box is shifted by this much relative
+  // to what x/y alone would suggest. Skipping this shift (as an earlier
+  // version did) let the item drift further off one edge than the other
+  // once scaled, instead of an equal MAX_OVERFLOW_FRACTION on both sides.
+  const centerShift = (size - ITEM_SIZE) / 2;
+  const minX = centerShift - overflow;
+  const minY = centerShift - overflow;
+  const maxX = Math.max(minX, CANVAS_REFERENCE_SIZE.width - ITEM_SIZE / 2 - size / 2 + overflow);
+  const maxY = Math.max(minY, CANVAS_REFERENCE_SIZE.height - ITEM_SIZE / 2 - size / 2 + overflow);
+
   return {
     ...itemLayout,
-    x: Math.min(Math.max(itemLayout.x, -CLAMP_MARGIN), CLAMP_MAX_X),
-    y: Math.min(Math.max(itemLayout.y, -CLAMP_MARGIN), CLAMP_MAX_Y),
+    x: Math.min(Math.max(itemLayout.x, minX), maxX),
+    y: Math.min(Math.max(itemLayout.y, minY), maxY),
   };
 }
+
+const MIN_BOARD_ZOOM = 1;
+const MAX_BOARD_ZOOM = 3;
 
 const AUTO_GRID_MAX_SCALE = 1;
 const AUTO_GRID_MIN_SCALE = 0.4;
@@ -197,69 +224,23 @@ function computeResolved(items: CanvasItem[], effectiveLayout: Record<number, Ca
   });
 }
 
-// An outfit saved by an earlier build that still had the "selecting an item
-// freezes its current position" bug (now fixed — see bringToFront in
-// OutfitCanvas) already has bad x/y/scale written to it, and there's no way
-// to tell that data apart from a genuinely deliberate manual placement after
-// the fact — both are just numbers in range. What both bad cases actually
-// look like once rendered, though, is items sitting substantially on top of
-// each other (a boot completely hidden under another item, a scarf covering
-// half the board) — real, deliberate layering (a belt's edge over a dress)
-// doesn't usually swallow most of another piece. So rather than trying to
-// spot bad *data*, this spots the bad *result*: if any two items end up
-// covering most of one another, the saved layout as a whole is treated as
-// broken, the same as a detected legacy entry.
-const SEVERE_OVERLAP_RATIO = 0.5;
-
-function itemBounds(itemLayout: ResolvedItemLayout) {
-  const size = ITEM_SIZE * itemLayout.scale;
-  const inset = (ITEM_SIZE - size) / 2;
-  return {
-    left: itemLayout.x + inset,
-    top: itemLayout.y + inset,
-    right: itemLayout.x + inset + size,
-    bottom: itemLayout.y + inset + size,
-  };
-}
-
-function overlapRatio(a: ReturnType<typeof itemBounds>, b: ReturnType<typeof itemBounds>): number {
-  const overlapWidth = Math.min(a.right, b.right) - Math.max(a.left, b.left);
-  const overlapHeight = Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top);
-  if (overlapWidth <= 0 || overlapHeight <= 0) return 0;
-
-  const overlapArea = overlapWidth * overlapHeight;
-  const areaA = (a.right - a.left) * (a.bottom - a.top);
-  const areaB = (b.right - b.left) * (b.bottom - b.top);
-  const smallerArea = Math.min(areaA, areaB);
-
-  return smallerArea > 0 ? overlapArea / smallerArea : 0;
-}
-
-function hasSevereOverlap(resolved: ReturnType<typeof computeResolved>): boolean {
-  const bounds = resolved.map(({ itemLayout }) => itemBounds(itemLayout));
-
-  for (let i = 0; i < bounds.length; i++) {
-    for (let j = i + 1; j < bounds.length; j++) {
-      if (overlapRatio(bounds[i], bounds[j]) > SEVERE_OVERLAP_RATIO) return true;
-    }
-  }
-
-  return false;
-}
-
+// This used to ALSO wipe the whole saved layout back to auto-grid whenever
+// any two items overlapped by more than 50%, on the theory that heavy
+// overlap could only mean corrupted data from an old bug. It didn't — it
+// just as easily meant the user deliberately layered two items closely (a
+// belt over a dress, a jacket mostly covering a top), and every re-render
+// while that overlap was on screen would silently snap everything back to
+// grid, scrambling stacking order along with it. Placement (including
+// deliberate overlap) is the user's call, never something this app decides
+// on its own — see the no-auto-placement rule. Only genuinely malformed
+// *data* (looksLegacy below) is still auto-corrected; a normal *result* the
+// user chose never is, no matter how much it overlaps.
 function resolveLayout(items: CanvasItem[], layout: Record<number, CanvasLayout>) {
   const hasLegacyEntry = Object.values(layout).some(
     (raw) => isUsableSaved(raw) && looksLegacy(raw)
   );
-  let effectiveLayout = hasLegacyEntry ? {} : layout;
-  let resolved = computeResolved(items, effectiveLayout);
-
-  if (Object.keys(effectiveLayout).length > 0 && hasSevereOverlap(resolved)) {
-    effectiveLayout = {};
-    resolved = computeResolved(items, effectiveLayout);
-  }
-
-  return resolved;
+  const effectiveLayout = hasLegacyEntry ? {} : layout;
+  return computeResolved(items, effectiveLayout);
 }
 
 const CORNERS = ['topLeft', 'topRight', 'bottomLeft', 'bottomRight'] as const;
@@ -317,6 +298,7 @@ function DraggableItem({
   selected,
   zIndex,
   displayScale,
+  disabled,
   onChange,
   onSelect,
   onTouch,
@@ -326,6 +308,11 @@ function DraggableItem({
   selected: boolean;
   zIndex: number;
   displayScale: number;
+  /** True while the board itself is being pinch-zoomed (see OutfitCanvas) —
+   * item drag/select/resize must stand down during that gesture, both so a
+   * stray finger doesn't drag an item mid-pinch and because zooming is a
+   * transient "look closer" view, not an editing mode. */
+  disabled: boolean;
   onChange: (next: ResolvedItemLayout) => void;
   onSelect: () => void;
   onTouch: () => void;
@@ -343,6 +330,24 @@ function DraggableItem({
   const currentScale = useSharedValue(layout.scale);
   const itemSize = ITEM_SIZE * displayScale;
 
+  // Keeps this item's on-screen position/scale in sync whenever the
+  // *resolved* layout actually changes for a reason other than this item's
+  // own live gesture (most importantly: clampToCanvas pulling it back fully
+  // onto the board after a commit that would otherwise have left it, or a
+  // stale corrupted entry, partly hidden behind the frame's clipped edge).
+  // Only depends on the real numbers, not the `layout` object's identity —
+  // OutfitCanvas re-resolves a fresh object for every item on every render
+  // (e.g. a z-bump from selecting a different item), most of which leave
+  // this item's own x/y/scale numerically unchanged and must not yank it
+  // mid-gesture.
+  useEffect(() => {
+    translateX.value = layout.x * displayScale;
+    translateY.value = layout.y * displayScale;
+    savedScale.value = layout.scale;
+    currentScale.value = layout.scale;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [layout.x, layout.y, layout.scale, displayScale]);
+
   function commit() {
     // Stacking order (z) isn't part of this — onTouch already bumped it to
     // the front at the start of this gesture via a separate call, and
@@ -357,40 +362,51 @@ function DraggableItem({
     });
   }
 
-  const tap = Gesture.Tap().onEnd(() => {
-    runOnJS(onSelect)();
-  });
+  const tap = Gesture.Tap()
+    .enabled(!disabled)
+    .onEnd(() => {
+      runOnJS(onSelect)();
+    });
 
   const pan = Gesture.Pan()
+    .enabled(!disabled)
+    // Capped to a single finger so a second finger landing (the start of a
+    // board-wide pinch-to-zoom — see OutfitCanvas) makes this fail instead of
+    // both gestures fighting over the same touch; the corner handles below
+    // remain the only way to resize an item, freeing a pinch anywhere on the
+    // board to always mean "zoom", the same way it does on a photo.
+    .minPointers(1)
+    .maxPointers(1)
     .onStart(() => {
       'worklet';
       runOnJS(onTouch)();
     })
     .onChange((event) => {
-      translateX.value += event.changeX;
-      translateY.value += event.changeY;
-    })
-    .onEnd(() => {
-      runOnJS(commit)();
-    });
-
-  const pinch = Gesture.Pinch()
-    .onStart(() => {
       'worklet';
-      runOnJS(onTouch)();
-    })
-    .onChange((event) => {
-      currentScale.value = Math.min(
-        Math.max(savedScale.value * event.scale, MIN_SCALE),
-        MAX_SCALE
-      );
+      // Stops the drag dead at the allowed-overflow edge instead of letting
+      // it past and clamping afterwards, matching clampToCanvas's own
+      // bounds exactly (see its comment and MAX_OVERFLOW_FRACTION) so the
+      // live drag and the saved/resolved position can never disagree — an
+      // item can hang up to half off any side, on any board shape.
+      const boardWidthPx = CANVAS_REFERENCE_SIZE.width * displayScale;
+      const boardHeightPx = CANVAS_REFERENCE_SIZE.height * displayScale;
+      const size = itemSize * currentScale.value;
+      const overflow = size * MAX_OVERFLOW_FRACTION;
+      // Same center-anchored-scale correction as clampToCanvas above.
+      const centerShift = (size - itemSize) / 2;
+      const minX = centerShift - overflow;
+      const minY = centerShift - overflow;
+      const maxX = Math.max(minX, boardWidthPx - itemSize / 2 - size / 2 + overflow);
+      const maxY = Math.max(minY, boardHeightPx - itemSize / 2 - size / 2 + overflow);
+
+      translateX.value = Math.min(Math.max(translateX.value + event.changeX, minX), maxX);
+      translateY.value = Math.min(Math.max(translateY.value + event.changeY, minY), maxY);
     })
     .onEnd(() => {
-      savedScale.value = currentScale.value;
       runOnJS(commit)();
     });
 
-  const gesture = Gesture.Simultaneous(pan, pinch, tap);
+  const gesture = Gesture.Simultaneous(pan, tap);
 
   const animatedStyle = useAnimatedStyle(() => ({
     transform: [
@@ -416,7 +432,7 @@ function DraggableItem({
           />
         )}
 
-        {selected && (
+        {selected && !disabled && (
           <>
             <View style={styles.selectionBorder} pointerEvents="none" />
             {CORNERS.map((corner) => (
@@ -453,6 +469,7 @@ export function OutfitCanvas({
 }) {
   const { t, language } = useI18n();
   const [selectedId, setSelectedId] = useState<number | null>(null);
+  const [isZooming, setIsZooming] = useState(false);
   const priceLabel = showPrice ? formatPrice(items, language) : null;
   // Uniform scale that fits the fixed 340x420 reference board inside
   // whatever width x height box this screen actually has room for — the
@@ -476,6 +493,70 @@ export function OutfitCanvas({
   );
   const boardWidth = CANVAS_REFERENCE_SIZE.width * displayScale;
   const boardHeight = CANVAS_REFERENCE_SIZE.height * displayScale;
+
+  // Pinch-to-zoom on the board itself, Instagram-photo style: a transient
+  // "look closer" on top of the rendered board, not an editing tool and not
+  // persisted anywhere — always springs back to untouched on release rather
+  // than leaving the outfit magnified. Kept entirely separate from item
+  // drag/resize (see DraggableItem's `disabled` prop and the 1-pointer cap
+  // on its pan gesture) so a pinch is never ambiguous between "resize this
+  // item" and "zoom the board" the way it would be if both listened for it.
+  const boardScale = useSharedValue(1);
+  const boardTranslateX = useSharedValue(0);
+  const boardTranslateY = useSharedValue(0);
+  const savedBoardTranslateX = useSharedValue(0);
+  const savedBoardTranslateY = useSharedValue(0);
+
+  function handleZoomStart() {
+    setIsZooming(true);
+  }
+
+  function handleZoomEnd() {
+    setIsZooming(false);
+  }
+
+  const boardPinch = Gesture.Pinch()
+    .onStart(() => {
+      'worklet';
+      runOnJS(handleZoomStart)();
+    })
+    .onUpdate((event) => {
+      boardScale.value = Math.min(Math.max(event.scale, MIN_BOARD_ZOOM), MAX_BOARD_ZOOM);
+    })
+    .onEnd(() => {
+      boardScale.value = withSpring(1);
+      boardTranslateX.value = withSpring(0);
+      boardTranslateY.value = withSpring(0);
+      savedBoardTranslateX.value = 0;
+      savedBoardTranslateY.value = 0;
+      runOnJS(handleZoomEnd)();
+    });
+
+  // Two fingers only, so this never competes with an item's own 1-finger
+  // drag (see DraggableItem's pan) — panning around a zoomed-in board only
+  // makes sense once you're already pinching with two fingers anyway.
+  const boardPan = Gesture.Pan()
+    .minPointers(2)
+    .maxPointers(2)
+    .onUpdate((event) => {
+      if (boardScale.value <= 1) return;
+      boardTranslateX.value = savedBoardTranslateX.value + event.translationX;
+      boardTranslateY.value = savedBoardTranslateY.value + event.translationY;
+    })
+    .onEnd(() => {
+      savedBoardTranslateX.value = boardTranslateX.value;
+      savedBoardTranslateY.value = boardTranslateY.value;
+    });
+
+  const boardZoomGesture = Gesture.Simultaneous(boardPinch, boardPan);
+
+  const boardAnimatedStyle = useAnimatedStyle(() => ({
+    transform: [
+      { translateX: boardTranslateX.value },
+      { translateY: boardTranslateY.value },
+      { scale: boardScale.value },
+    ],
+  }));
 
   // Persisted (not just in-memory) stacking order: bumping z on every touch
   // and saving it through onLayoutChange means the front/back arrangement
@@ -501,24 +582,29 @@ export function OutfitCanvas({
     // one big, mostly-empty card instead of a board the right shape for its
     // contents.
     <View style={[styles.canvas, { width: boardWidth, height: boardHeight }]}>
-      {items.length === 0 && <Text style={styles.emptyText}>{t('canvas.empty')}</Text>}
+      <GestureDetector gesture={boardZoomGesture}>
+        <Animated.View style={[styles.zoomLayer, boardAnimatedStyle]}>
+          {items.length === 0 && <Text style={styles.emptyText}>{t('canvas.empty')}</Text>}
 
-      {resolveLayout(items, layout).map(({ item, itemLayout, zIndex }) => (
-        <DraggableItem
-          key={item.id}
-          item={item}
-          layout={itemLayout}
-          selected={selectedId === item.id}
-          zIndex={zIndex}
-          displayScale={displayScale}
-          onChange={(next) => onLayoutChange(item.id, toFraction(next))}
-          onSelect={() => {
-            setSelectedId((current) => (current === item.id ? null : item.id));
-            bringToFront(item.id);
-          }}
-          onTouch={() => bringToFront(item.id)}
-        />
-      ))}
+          {resolveLayout(items, layout).map(({ item, itemLayout, zIndex }) => (
+            <DraggableItem
+              key={item.id}
+              item={item}
+              layout={itemLayout}
+              selected={selectedId === item.id}
+              zIndex={zIndex}
+              displayScale={displayScale}
+              disabled={isZooming}
+              onChange={(next) => onLayoutChange(item.id, toFraction(next))}
+              onSelect={() => {
+                setSelectedId((current) => (current === item.id ? null : item.id));
+                bringToFront(item.id);
+              }}
+              onTouch={() => bringToFront(item.id)}
+            />
+          ))}
+        </Animated.View>
+      </GestureDetector>
 
       {priceLabel && (
         <View style={styles.priceTag} pointerEvents="none">
@@ -541,14 +627,19 @@ export function OutfitPreview({
   showPrice?: boolean;
 }) {
   const { language } = useI18n();
-  const scale = Math.min(
-    size / CANVAS_REFERENCE_SIZE.width,
-    size / CANVAS_REFERENCE_SIZE.height
-  );
+  // `size` is the board's WIDTH, not a square side — height is derived from
+  // it using the exact same fixed reference proportions OutfitCanvas uses
+  // (see CANVAS_REFERENCE_SIZE and its callers' onLayout handlers). Forcing
+  // this into a square box used to letterbox the real 340x420 board down
+  // with empty margins on the sides, which put every item at a visibly
+  // different spot than the actual editor — this makes it a true scaled-down
+  // replica instead, same proportions, same relative positions, no margins.
+  const scale = size / CANVAS_REFERENCE_SIZE.width;
+  const boardHeight = CANVAS_REFERENCE_SIZE.height * scale;
   const priceLabel = showPrice ? formatPrice(items, language) : null;
 
   return (
-    <View style={[styles.canvas, { width: size, height: size }]}>
+    <View style={[styles.canvas, { width: size, height: boardHeight }]}>
       <View
         style={[
           styles.previewInner,
@@ -614,6 +705,13 @@ const styles = StyleSheet.create({
   },
   previewInner: {
     overflow: 'hidden',
+  },
+  zoomLayer: {
+    position: 'absolute',
+    left: 0,
+    top: 0,
+    right: 0,
+    bottom: 0,
   },
   emptyText: {
     position: 'absolute',

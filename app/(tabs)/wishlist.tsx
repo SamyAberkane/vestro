@@ -2,8 +2,6 @@ import * as ImagePicker from 'expo-image-picker';
 import { useFocusEffect } from 'expo-router';
 import { useCallback, useMemo, useRef, useState } from 'react';
 import {
-  Alert,
-  Image,
   ScrollView,
   StyleSheet,
   Text,
@@ -13,33 +11,29 @@ import {
 } from 'react-native';
 
 import { ClothingOptionsSheet } from '@/components/clothing-options-sheet';
+import { ClothingPreviewModal } from '@/components/clothing-preview-modal';
 import { ColorPickerModal } from '@/components/color-picker-modal';
-import { CropModal } from '@/components/crop-modal';
-import { ItemReveal } from '@/components/item-reveal';
+import { ConfirmModal } from '@/components/confirm-modal';
 import { ProcessingOverlay } from '@/components/processing-overlay';
+import { ScreenBackground } from '@/components/screen-background';
+import { StickerImage } from '@/components/sticker-image';
 import { AppColors, VestroCategories, VestroFonts } from '@/constants/theme';
 import { useI18n } from '@/i18n/context';
-import {
-  deleteClothingItem,
-  fetchClothingItems,
-  insertClothingItems,
-  updateClothingItem,
-} from '@/lib/clothing';
-import { showPhotoTips } from '@/lib/photo-tips';
+import { alert } from '@/lib/alert';
+import { deleteClothingItem, fetchClothingItems, updateClothingItem } from '@/lib/clothing';
 import { useAppTheme } from '@/theme/context';
 import type { ClothingItem } from '@/types/clothing';
 import { formatPrice } from '@/utils/currency';
-import { analyzeClothingPhoto, removeBackground, type PhotoIssue } from '@/utils/remove-background';
+import { removeBackground } from '@/utils/remove-background';
 
 // Same fix as the Dressing tab: fit as many comfortable, phone-sized cards
 // as the actual screen width allows, instead of always doing 2 columns
 // stretched to fill whatever width is available (huge cards on a wide iPad).
 const CONTENT_PADDING = 20;
 const GRID_GAP = 20;
-const TARGET_CARD_WIDTH = 170;
 
 export default function WishlistScreen() {
-  const { t, tCategory, language } = useI18n();
+  const { t, tCategory, tPlural, language } = useI18n();
   const { colors: VestroColors } = useAppTheme();
   const styles = useMemo(() => createStyles(VestroColors), [VestroColors]);
   const { width: windowWidth } = useWindowDimensions();
@@ -49,23 +43,17 @@ export default function WishlistScreen() {
   const isProcessingImage = processingImageUri !== undefined;
   const [batchStep, setBatchStep] = useState({ index: 1, count: 1 });
   const [selectedCategory, setSelectedCategory] = useState('Tout');
+  const [columns, setColumns] = useState<2 | 3>(2);
   const [colorPickerVisible, setColorPickerVisible] = useState(false);
   const colorSelectRef = useRef<((color: string | undefined) => void) | null>(null);
   const colorDismissRef = useRef<(() => void) | null>(null);
   const [optionsItemId, setOptionsItemId] = useState<number | null>(null);
+  const [previewItemId, setPreviewItemId] = useState<number | null>(null);
   const optionsItem = clothes.find((clothing) => clothing.id === optionsItemId) ?? null;
-  const [cropTarget, setCropTarget] = useState<{ id: number; image: string } | null>(null);
-  const [revealItems, setRevealItems] = useState<ClothingItem[]>([]);
-
-  function requestCrop() {
-    if (!optionsItem?.image) return;
-    const target = { id: optionsItem.id, image: optionsItem.image };
-    // Two RN <Modal>s open at once is flaky (the second one can silently fail
-    // to present, especially on Android) — close the options sheet first and
-    // let its dismiss animation finish before presenting the crop modal.
-    setOptionsItemId(null);
-    setTimeout(() => setCropTarget(target), 300);
-  }
+  const previewItem = clothes.find((clothing) => clothing.id === previewItemId) ?? null;
+  const [selectionMode, setSelectionMode] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
+  const [bulkDeleteConfirmVisible, setBulkDeleteConfirmVisible] = useState(false);
 
   function openColorPicker(
     onPick: (color: string | undefined) => void,
@@ -96,7 +84,7 @@ export default function WishlistScreen() {
         try {
           setClothes(await fetchClothingItems());
         } catch (error) {
-          Alert.alert(t('common.errorTitle'), String(error instanceof Error ? error.message : error));
+          alert(t('common.errorTitle'), String(error instanceof Error ? error.message : error));
         }
 
         setIsLoaded(true);
@@ -115,10 +103,13 @@ export default function WishlistScreen() {
       ? wishlistItems
       : wishlistItems.filter((item) => item.category === selectedCategory);
 
+  // Same 2/3-column target-width approach as the Dressing tab: fit as many
+  // cards of the chosen target size as the screen allows.
   const availableWidth = windowWidth - CONTENT_PADDING * 2;
+  const targetCardWidth = columns === 2 ? 170 : 112;
   const numColumns = Math.max(
-    2,
-    Math.floor((availableWidth + GRID_GAP) / (TARGET_CARD_WIDTH + GRID_GAP))
+    columns,
+    Math.floor((availableWidth + GRID_GAP) / (targetCardWidth + GRID_GAP))
   );
   const cardWidth = (availableWidth - GRID_GAP * (numColumns - 1)) / numColumns;
 
@@ -130,88 +121,7 @@ export default function WishlistScreen() {
     try {
       await updateClothingItem(id, patch);
     } catch (error) {
-      Alert.alert(t('common.errorTitle'), String(error instanceof Error ? error.message : error));
-    }
-  }
-
-  async function addWishlistItem() {
-    await showPhotoTips(t);
-
-    const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
-
-    if (!permission.granted) {
-      Alert.alert(t('common.permissionTitle'), t('common.permissionPhotos'));
-      return;
-    }
-
-    const result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ['images'],
-      allowsMultipleSelection: true,
-      selectionLimit: 0,
-      quality: 0.8,
-    });
-
-    if (result.canceled || result.assets.length === 0) return;
-
-    const assets = result.assets;
-
-    if (assets.length > 1) {
-      const confirmed = await new Promise<boolean>((resolve) => {
-        Alert.alert(
-          t('dressing.multiSelectTitle', { count: assets.length }),
-          t('dressing.multiSelectMessage', { count: assets.length }),
-          [
-            { text: t('common.cancel'), style: 'cancel', onPress: () => resolve(false) },
-            { text: t('common.continue'), onPress: () => resolve(true) },
-          ]
-        );
-      });
-      if (!confirmed) return;
-    }
-
-    const newItems = [];
-    const rejected: { index: number; issue: PhotoIssue }[] = [];
-
-    for (let i = 0; i < assets.length; i++) {
-      setBatchStep({ index: i + 1, count: assets.length });
-      setProcessingImageUri(assets[i].uri);
-
-      const analysis = await analyzeClothingPhoto(assets[i].uri, language);
-
-      if (analysis.usable === false) {
-        rejected.push({ index: i + 1, issue: analysis.issue ?? 'other' });
-        continue;
-      }
-
-      newItems.push({
-        name: analysis.name ?? t('wishlist.fallbackName', { index: i + 1 }),
-        category: analysis.category ?? VestroCategories[0],
-        color: analysis.color,
-        status: 'wishlist' as const,
-        available: true,
-        imageDataUri: analysis.image,
-      });
-    }
-
-    setProcessingImageUri(undefined);
-
-    if (rejected.length > 0) {
-      const lines = rejected.map((r) =>
-        assets.length > 1
-          ? `${t('processing.stepLabel', { index: r.index, count: assets.length })} — ${t(`photoIssue.${r.issue}`)}`
-          : t(`photoIssue.${r.issue}`)
-      );
-      Alert.alert(t('photoIssue.alertTitle'), lines.join('\n'));
-    }
-
-    if (newItems.length === 0) return;
-
-    try {
-      const inserted = await insertClothingItems(newItems);
-      setClothes((currentClothes) => [...inserted, ...currentClothes]);
-      setRevealItems(inserted);
-    } catch (error) {
-      Alert.alert(t('common.errorTitle'), String(error instanceof Error ? error.message : error));
+      alert(t('common.errorTitle'), String(error instanceof Error ? error.message : error));
     }
   }
 
@@ -221,7 +131,7 @@ export default function WishlistScreen() {
     const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
 
     if (!permission.granted) {
-      Alert.alert(t('common.permissionTitle'), t('common.permissionPhotos'));
+      alert(t('common.permissionTitle'), t('common.permissionPhotos'));
       return;
     }
 
@@ -235,31 +145,132 @@ export default function WishlistScreen() {
       const targetId = optionsItem.id;
       setBatchStep({ index: 1, count: 1 });
       setProcessingImageUri(result.assets[0].uri);
-      const newImage = await removeBackground(result.assets[0].uri);
-      setProcessingImageUri(undefined);
-      updateItem(targetId, { imageDataUri: newImage });
+      try {
+        const newImage = await removeBackground(result.assets[0].uri);
+        updateItem(targetId, { imageDataUri: newImage });
+      } catch (error) {
+        alert(t('common.errorTitle'), String(error instanceof Error ? error.message : error));
+      } finally {
+        setProcessingImageUri(undefined);
+      }
+    }
+  }
+
+  function toggleSelectionMode() {
+    setSelectionMode((current) => !current);
+    setSelectedIds(new Set());
+  }
+
+  function toggleItemSelected(id: number) {
+    setSelectedIds((current) => {
+      const next = new Set(current);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  function toggleSelectAll() {
+    setSelectedIds((current) =>
+      current.size === filteredWishlistItems.length
+        ? new Set()
+        : new Set(filteredWishlistItems.map((item) => item.id))
+    );
+  }
+
+  function handleCardPress(item: ClothingItem) {
+    if (selectionMode) {
+      toggleItemSelected(item.id);
+      return;
+    }
+    openItem(item);
+  }
+
+  function handleCardLongPress(item: ClothingItem) {
+    if (selectionMode) return;
+    setSelectionMode(true);
+    setSelectedIds(new Set([item.id]));
+  }
+
+  async function handleBulkMoveToDressing() {
+    const ids = [...selectedIds];
+    setSelectionMode(false);
+    setSelectedIds(new Set());
+    await Promise.all(ids.map((id) => updateItem(id, { status: 'owned' })));
+  }
+
+  async function handleBulkDelete() {
+    const ids = [...selectedIds];
+    setBulkDeleteConfirmVisible(false);
+    setSelectionMode(false);
+    setSelectedIds(new Set());
+
+    setClothes((currentClothes) => currentClothes.filter((clothing) => !ids.includes(clothing.id)));
+
+    const results = await Promise.allSettled(ids.map((id) => deleteClothingItem(id)));
+    const firstFailure = results.find(
+      (result): result is PromiseRejectedResult => result.status === 'rejected'
+    );
+    if (firstFailure) {
+      const error = firstFailure.reason;
+      alert(t('common.errorTitle'), String(error instanceof Error ? error.message : error));
+      loadClothesAfterFailure();
+    }
+  }
+
+  async function loadClothesAfterFailure() {
+    try {
+      setClothes(await fetchClothingItems());
+    } catch (error) {
+      alert(t('common.errorTitle'), String(error instanceof Error ? error.message : error));
     }
   }
 
   function openItem(item: ClothingItem) {
-    setOptionsItemId(item.id);
+    setPreviewItemId(item.id);
   }
 
   return (
-    <View style={styles.screen}>
-    <ScrollView contentContainerStyle={styles.content}>
+    <ScreenBackground style={styles.screen}>
+    <ScrollView contentContainerStyle={[styles.content, selectionMode && styles.contentWithSelectionBar]}>
       <View style={styles.header}>
         <View>
           <Text style={styles.title}>{t('wishlist.title')}</Text>
           <Text style={styles.count}>{t('wishlist.count', { count: wishlistItems.length })}</Text>
         </View>
 
-        <TouchableOpacity
-          style={styles.addButton}
-          onPress={addWishlistItem}
-        >
-          <Text style={styles.addButtonGlyph}>+</Text>
-        </TouchableOpacity>
+        <View style={styles.headerActions}>
+          {wishlistItems.length > 0 && (
+            <TouchableOpacity onPress={toggleSelectionMode}>
+              <Text style={styles.selectToggleText}>
+                {t(selectionMode ? 'dressing.selectDone' : 'dressing.select')}
+              </Text>
+            </TouchableOpacity>
+          )}
+
+          <View style={styles.viewToggle}>
+            <TouchableOpacity
+              style={[styles.viewToggleButton, columns === 2 && styles.viewToggleButtonActive]}
+              onPress={() => setColumns(2)}
+            >
+              <View style={styles.gridIconTwo}>
+                <View style={styles.gridIconBar} />
+                <View style={styles.gridIconBar} />
+              </View>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={[styles.viewToggleButton, columns === 3 && styles.viewToggleButtonActive]}
+              onPress={() => setColumns(3)}
+            >
+              <View style={styles.gridIconThree}>
+                <View style={styles.gridIconBar} />
+                <View style={styles.gridIconBar} />
+                <View style={styles.gridIconBar} />
+              </View>
+            </TouchableOpacity>
+          </View>
+        </View>
       </View>
 
       {wishlistItems.length > 0 && (
@@ -294,19 +305,25 @@ export default function WishlistScreen() {
         </View>
       ) : (
         <View style={styles.grid}>
-          {filteredWishlistItems.map((item) => (
+          {filteredWishlistItems.map((item) => {
+            const isSelected = selectedIds.has(item.id);
+
+            return (
             <TouchableOpacity
               style={[styles.card, { width: cardWidth }]}
               key={item.id}
-              onPress={() => openItem(item)}
+              onPress={() => handleCardPress(item)}
+              onLongPress={() => handleCardLongPress(item)}
             >
               <View style={styles.imageWrap}>
+                {selectionMode && (
+                  <View style={[styles.checkBadge, isSelected && styles.checkBadgeActive]}>
+                    {isSelected && <Text style={styles.checkGlyph}>✓</Text>}
+                  </View>
+                )}
+
                 {item.image && (
-                  <Image
-                    source={{ uri: item.image }}
-                    style={styles.image}
-                    resizeMode="cover"
-                  />
+                  <StickerImage uri={item.image} containerStyle={styles.image} resizeMode="cover" />
                 )}
                 <Text style={styles.envieBadge}>{t('wishlist.badge')}</Text>
               </View>
@@ -319,10 +336,55 @@ export default function WishlistScreen() {
                 )}
               </View>
             </TouchableOpacity>
-          ))}
+            );
+          })}
         </View>
       )}
     </ScrollView>
+
+      {selectionMode && (
+        <View style={styles.selectionBar}>
+          <TouchableOpacity onPress={toggleSelectAll}>
+            <Text style={styles.selectionBarCount}>
+              {selectedIds.size > 0
+                ? tPlural('dressing.selectedCount', selectedIds.size)
+                : t('dressing.selectAll')}
+            </Text>
+          </TouchableOpacity>
+
+          <View style={styles.selectionBarActions}>
+            <TouchableOpacity
+              style={styles.selectionBarButton}
+              disabled={selectedIds.size === 0}
+              onPress={handleBulkMoveToDressing}
+            >
+              <Text
+                style={[
+                  styles.selectionBarButtonText,
+                  selectedIds.size === 0 && styles.selectionBarButtonTextDisabled,
+                ]}
+              >
+                {t('wishlist.moveToDressing')}
+              </Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={styles.selectionBarButton}
+              disabled={selectedIds.size === 0}
+              onPress={() => setBulkDeleteConfirmVisible(true)}
+            >
+              <Text
+                style={[
+                  styles.selectionBarButtonTextDestructive,
+                  selectedIds.size === 0 && styles.selectionBarButtonTextDisabled,
+                ]}
+              >
+                {t('dressing.bulkDelete')}
+              </Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      )}
 
       <ProcessingOverlay
         visible={isProcessingImage}
@@ -331,16 +393,20 @@ export default function WishlistScreen() {
         stepCount={batchStep.count}
       />
 
-      <ItemReveal
-        items={revealItems}
-        visible={revealItems.length > 0}
-        onDone={() => setRevealItems([])}
-      />
-
       <ColorPickerModal
         visible={colorPickerVisible}
         onSelect={handleColorSelect}
         onCancel={handleColorCancel}
+      />
+
+      <ClothingPreviewModal
+        item={previewItem}
+        onClose={() => setPreviewItemId(null)}
+        onEdit={() => {
+          if (!previewItem) return;
+          setOptionsItemId(previewItem.id);
+          setPreviewItemId(null);
+        }}
       />
 
       <ClothingOptionsSheet
@@ -363,7 +429,6 @@ export default function WishlistScreen() {
           openColorPicker((color) => updateItem(targetId, { color }));
         }}
         onRequestPhotoChange={handleOptionsPhotoChange}
-        onRequestCrop={requestCrop}
         moveAction={{
           label: t('wishlist.moveToDressing'),
           onPress: () => optionsItem && updateItem(optionsItem.id, { status: 'owned' }),
@@ -374,28 +439,29 @@ export default function WishlistScreen() {
           setClothes((currentClothes) => currentClothes.filter((clothing) => clothing.id !== targetId));
           setOptionsItemId(null);
           deleteClothingItem(targetId).catch((error) =>
-            Alert.alert(t('common.errorTitle'), String(error instanceof Error ? error.message : error))
+            alert(t('common.errorTitle'), String(error instanceof Error ? error.message : error))
           );
         }}
       />
 
-      <CropModal
-        visible={cropTarget !== null}
-        imageUri={cropTarget?.image}
-        onCancel={() => setCropTarget(null)}
-        onConfirm={(croppedDataUri) => {
-          if (cropTarget) updateItem(cropTarget.id, { imageDataUri: croppedDataUri });
-          setCropTarget(null);
-        }}
+      <ConfirmModal
+        visible={bulkDeleteConfirmVisible}
+        title={tPlural('dressing.bulkDeleteConfirmTitle', selectedIds.size)}
+        message={t('dressing.bulkDeleteConfirmMessage')}
+        confirmLabel={t('dressing.bulkDelete')}
+        cancelLabel={t('common.cancel')}
+        destructive
+        onConfirm={handleBulkDelete}
+        onCancel={() => setBulkDeleteConfirmVisible(false)}
       />
-    </View>
+
+    </ScreenBackground>
   );
 }
 
 const createStyles = (VestroColors: AppColors) => StyleSheet.create({
   screen: {
     flex: 1,
-    backgroundColor: VestroColors.background,
   },
   content: {
     flexGrow: 1,
@@ -403,10 +469,25 @@ const createStyles = (VestroColors: AppColors) => StyleSheet.create({
     paddingHorizontal: 20,
     paddingBottom: 40,
   },
+  contentWithSelectionBar: {
+    paddingBottom: 90,
+  },
   header: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'flex-start',
+  },
+  headerActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 16,
+  },
+  selectToggleText: {
+    fontFamily: VestroFonts.sansMedium,
+    fontSize: 11,
+    letterSpacing: 1,
+    textTransform: 'uppercase',
+    color: VestroColors.ink,
   },
   title: {
     fontFamily: VestroFonts.serifSemiBoldItalic,
@@ -421,14 +502,38 @@ const createStyles = (VestroColors: AppColors) => StyleSheet.create({
     textTransform: 'uppercase',
     color: VestroColors.muted,
   },
-  addButton: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
+  viewToggle: {
+    flexDirection: 'row',
+    gap: 6,
+  },
+  viewToggleButton: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
     borderWidth: 1,
-    borderColor: VestroColors.ink,
+    borderColor: VestroColors.border,
     alignItems: 'center',
     justifyContent: 'center',
+  },
+  viewToggleButtonActive: {
+    borderColor: VestroColors.ink,
+  },
+  gridIconTwo: {
+    flexDirection: 'row',
+    gap: 3,
+    width: 14,
+    height: 12,
+  },
+  gridIconThree: {
+    flexDirection: 'row',
+    gap: 2,
+    width: 14,
+    height: 12,
+  },
+  gridIconBar: {
+    flex: 1,
+    backgroundColor: VestroColors.ink,
+    borderRadius: 1,
   },
   filtersScroll: {
     flexGrow: 0,
@@ -465,11 +570,6 @@ const createStyles = (VestroColors: AppColors) => StyleSheet.create({
     textTransform: 'uppercase',
     color: VestroColors.muted,
   },
-  addButtonGlyph: {
-    fontFamily: VestroFonts.serifMedium,
-    fontSize: 18,
-    color: VestroColors.ink,
-  },
   emptyState: {
     flex: 1,
     minHeight: 450,
@@ -497,6 +597,7 @@ const createStyles = (VestroColors: AppColors) => StyleSheet.create({
   },
   card: {},
   imageWrap: {
+    position: 'relative',
     height: 172,
     backgroundColor: VestroColors.surface,
     alignItems: 'flex-end',
@@ -536,5 +637,71 @@ const createStyles = (VestroColors: AppColors) => StyleSheet.create({
     letterSpacing: 1,
     textTransform: 'uppercase',
     color: VestroColors.ink,
+  },
+  checkBadge: {
+    position: 'absolute',
+    top: 8,
+    left: 8,
+    zIndex: 1,
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    backgroundColor: 'transparent',
+    borderWidth: 1.5,
+    borderColor: VestroColors.border,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  checkBadgeActive: {
+    backgroundColor: VestroColors.ink,
+    borderColor: VestroColors.ink,
+  },
+  checkGlyph: {
+    fontFamily: VestroFonts.sansSemiBold,
+    fontSize: 12,
+    color: VestroColors.buttonText,
+  },
+  selectionBar: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    bottom: 0,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 20,
+    paddingVertical: 16,
+    backgroundColor: VestroColors.surface,
+    borderTopWidth: 1,
+    borderTopColor: VestroColors.border,
+  },
+  selectionBarCount: {
+    fontFamily: VestroFonts.sansMedium,
+    fontSize: 12,
+    letterSpacing: 0.5,
+    color: VestroColors.ink,
+  },
+  selectionBarActions: {
+    flexDirection: 'row',
+    gap: 20,
+  },
+  selectionBarButton: {},
+  selectionBarButtonText: {
+    fontFamily: VestroFonts.sansSemiBold,
+    fontSize: 12,
+    letterSpacing: 0.5,
+    textTransform: 'uppercase',
+    color: VestroColors.ink,
+  },
+  selectionBarButtonTextDestructive: {
+    fontFamily: VestroFonts.sansSemiBold,
+    fontSize: 12,
+    letterSpacing: 0.5,
+    textTransform: 'uppercase',
+    color: '#B2554A',
+  },
+  selectionBarButtonTextDisabled: {
+    color: VestroColors.muted,
+    opacity: 0.5,
   },
 });

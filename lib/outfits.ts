@@ -33,7 +33,7 @@ export async function fetchOutfits(): Promise<Outfit[]> {
     .select('*')
     .order('created_at', { ascending: false });
 
-  if (error) throw error;
+  if (error) throw new Error(error.message);
   return (data ?? []).map(rowToOutfit);
 }
 
@@ -57,7 +57,7 @@ export async function insertOutfit(outfit: {
     .select()
     .single();
 
-  if (error) throw error;
+  if (error) throw new Error(error.message);
   return rowToOutfit(data);
 }
 
@@ -72,10 +72,10 @@ export async function updateOutfit(
   if (patch.showPrice !== undefined) update.show_price = patch.showPrice;
 
   const { error } = await supabase.from('outfits').update(update).eq('id', id);
-  if (error) throw error;
+  if (error) throw new Error(error.message);
 }
 
 export async function deleteOutfit(id: number): Promise<void> {
   const { error } = await supabase.from('outfits').delete().eq('id', id);
-  if (error) throw error;
+  if (error) throw new Error(error.message);
 }

@@ -23,13 +23,19 @@ import 'react-native-reanimated';
 import { View } from 'react-native';
 
 import { AuthProvider, useAuth } from '@/auth/context';
+import { AlertHost } from '@/components/alert-host';
 import { Onboarding } from '@/components/onboarding';
-import { PaywallModal } from '@/components/paywall-modal';
 import { I18nProvider } from '@/i18n/context';
-import { getIsPremium, initIAP, teardownIAP } from '@/lib/premium';
+import { optimizeStoredImages } from '@/lib/clothing';
+import { initIAP, teardownIAP } from '@/lib/premium';
 import { AppThemeProvider, useAppTheme } from '@/theme/context';
 
 const ONBOARDING_KEY = 'vestro-onboarding-seen';
+// One-time, silent pass over already-stored clothing photos so anything
+// saved before WebP output existed (see MAX_OUTPUT_WIDTH / OUTPUT_COMPRESS
+// in utils/remove-background.ts) gets caught up automatically — no UI, no
+// user action, runs once per account and never again once it succeeds.
+const IMAGES_OPTIMIZED_KEY = 'vestro-images-optimized-v2';
 
 export const unstable_settings = {
   anchor: '(tabs)',
@@ -38,43 +44,42 @@ export const unstable_settings = {
 SplashScreen.preventAutoHideAsync();
 
 function RootNavigator() {
-  const { isSignedIn, isLoading, signOut } = useAuth();
+  const { isSignedIn, isLoading } = useAuth();
   const { scheme, colors } = useAppTheme();
-  const [isPremium, setIsPremium] = useState<boolean | null>(null);
   const [onboardingSeen, setOnboardingSeen] = useState<boolean | null>(null);
-
-  useEffect(() => {
-    if (!isSignedIn) {
-      setIsPremium(null);
-      return;
-    }
-
-    let cancelled = false;
-    getIsPremium().then((active) => {
-      if (!cancelled) setIsPremium(active);
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [isSignedIn]);
 
   useEffect(() => {
     AsyncStorage.getItem(ONBOARDING_KEY).then((value) => setOnboardingSeen(value === 'true'));
   }, []);
+
+  useEffect(() => {
+    if (!isSignedIn) return;
+
+    AsyncStorage.getItem(IMAGES_OPTIMIZED_KEY).then((done) => {
+      if (done === 'true') return;
+
+      optimizeStoredImages()
+        .then(() => AsyncStorage.setItem(IMAGES_OPTIMIZED_KEY, 'true'))
+        .catch((error) => console.warn('[imageOptimization] échec, nouvel essai au prochain lancement', error));
+    });
+  }, [isSignedIn]);
 
   function finishOnboarding() {
     setOnboardingSeen(true);
     AsyncStorage.setItem(ONBOARDING_KEY, 'true');
   }
 
-  // Block on the premium check too — Vestro has no free tier, so nothing
-  // behind the gate should flash on screen before we know the entitlement.
-  if (isLoading || (isSignedIn && isPremium === null) || onboardingSeen === null) {
+  // The whole app is browsable without a subscription now — premium is only
+  // asked for at the specific actions that need it (see useAddClothing and
+  // wishlist.tsx's addWishlistItem), enforced for real by Postgres RLS
+  // (has_active_premium() — see supabase/schema.sql), not by this gate. Only
+  // onboarding's one-time seen-flag still blocks the first paint.
+  if (isLoading || onboardingSeen === null) {
     return <View style={{ flex: 1, backgroundColor: colors.background }} />;
   }
 
   return (
-    <NavigationThemeProvider value={scheme === 'dark' ? DarkTheme : DefaultTheme}>
+    <NavigationThemeProvider value={scheme === 'light' ? DefaultTheme : DarkTheme}>
       <Stack>
         <Stack.Protected guard={isSignedIn}>
           <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
@@ -94,21 +99,11 @@ function RootNavigator() {
         <Stack.Screen name="legal/terms" options={{ headerShown: false, presentation: 'modal' }} />
       </Stack>
 
-      {isSignedIn && isPremium === false && (
-        <PaywallModal
-          visible
-          dismissible={false}
-          onClose={() => {}}
-          onPremiumChange={setIsPremium}
-          onSignOut={signOut}
-        />
-      )}
+      {isSignedIn && !onboardingSeen && <Onboarding onDone={finishOnboarding} />}
 
-      {isSignedIn && isPremium === true && !onboardingSeen && (
-        <Onboarding onDone={finishOnboarding} />
-      )}
+      <StatusBar style={scheme === 'light' ? 'dark' : 'light'} />
 
-      <StatusBar style={scheme === 'dark' ? 'light' : 'dark'} />
+      <AlertHost />
     </NavigationThemeProvider>
   );
 }
