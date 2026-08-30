@@ -405,7 +405,6 @@ export default function HomeScreen() {
           value={showPrice}
           onValueChange={setShowPrice}
           trackColor={{ false: VestroColors.border, true: VestroColors.ink }}
-          thumbColor={VestroColors.buttonText}
           ios_backgroundColor={VestroColors.border}
         />
       </View>
@@ -799,7 +798,7 @@ const createStyles = (VestroColors: AppColors) => StyleSheet.create({
   saveLinkText: {
     fontFamily: VestroFonts.serifMediumItalic,
     fontSize: 13,
-    color: VestroColors.muted,
+    color: VestroColors.ink,
     textDecorationLine: 'underline',
   },
   recentSection: {

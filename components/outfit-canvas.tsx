@@ -224,6 +224,26 @@ function computeResolved(items: CanvasItem[], effectiveLayout: Record<number, Ca
   });
 }
 
+// The rendered/tappable box for an item, in the same on-screen pixel space
+// as a tap event's x/y on the board — mirrors exactly what DraggableItem
+// itself renders (translateX/Y = itemLayout.x/y * displayScale, scaled via
+// a CSS transform that grows around the box's own center, same as
+// clampToCanvas's centerShift correction). Used only for board-level tap
+// hit-testing (see handleBoardTap in OutfitCanvas), never for layout itself.
+function boxForItem(itemLayout: ResolvedItemLayout, displayScale: number) {
+  const itemSize = ITEM_SIZE * displayScale;
+  const centerX = itemLayout.x * displayScale + itemSize / 2;
+  const centerY = itemLayout.y * displayScale + itemSize / 2;
+  const halfSize = (itemSize * itemLayout.scale) / 2;
+
+  return {
+    left: centerX - halfSize,
+    right: centerX + halfSize,
+    top: centerY - halfSize,
+    bottom: centerY + halfSize,
+  };
+}
+
 // This used to ALSO wipe the whole saved layout back to auto-grid whenever
 // any two items overlapped by more than 50%, on the theory that heavy
 // overlap could only mean corrupted data from an old bug. It didn't — it
@@ -300,7 +320,6 @@ function DraggableItem({
   displayScale,
   disabled,
   onChange,
-  onSelect,
   onTouch,
 }: {
   item: CanvasItem;
@@ -314,7 +333,6 @@ function DraggableItem({
    * transient "look closer" view, not an editing mode. */
   disabled: boolean;
   onChange: (next: ResolvedItemLayout) => void;
-  onSelect: () => void;
   onTouch: () => void;
 }) {
   // translateX/Y track the item's actual on-screen pixel position (logical
@@ -362,12 +380,6 @@ function DraggableItem({
     });
   }
 
-  const tap = Gesture.Tap()
-    .enabled(!disabled)
-    .onEnd(() => {
-      runOnJS(onSelect)();
-    });
-
   const pan = Gesture.Pan()
     .enabled(!disabled)
     // Capped to a single finger so a second finger landing (the start of a
@@ -406,7 +418,7 @@ function DraggableItem({
       runOnJS(commit)();
     });
 
-  const gesture = Gesture.Simultaneous(pan, tap);
+  const gesture = pan;
 
   const animatedStyle = useAnimatedStyle(() => ({
     transform: [
@@ -572,6 +584,49 @@ export function OutfitCanvas({
     onLayoutChange(itemId, { z: Date.now() });
   }
 
+  const resolved = resolveLayout(items, layout);
+
+  // Tapping selects the topmost item at that point, same as always — but a
+  // second tap in the exact same spot steps to the next item down the stack
+  // instead of re-picking the same topmost one. Needed because the tappable
+  // box is the full resize square, not just the sticker's visible pixels: a
+  // small sticker inside a much bigger (mostly empty) square can otherwise
+  // make it impossible to reach whatever's underneath it. Deliberately
+  // doesn't bringToFront here — only an actual drag does (via onTouch) —
+  // because reordering z on every tap would scramble the stack order
+  // mid-cycle, making "next" unpredictable from one tap to the next.
+  function handleBoardTap(x: number, y: number) {
+    const candidates = resolved
+      .filter(({ itemLayout }) => {
+        const box = boxForItem(itemLayout, displayScale);
+        return x >= box.left && x <= box.right && y >= box.top && y <= box.bottom;
+      })
+      .sort((a, b) => b.zIndex - a.zIndex);
+
+    if (candidates.length === 0) return;
+
+    if (candidates.length === 1) {
+      const onlyId = candidates[0].item.id;
+      setSelectedId((current) => (current === onlyId ? null : onlyId));
+      return;
+    }
+
+    const currentIndex = candidates.findIndex((candidate) => candidate.item.id === selectedId);
+    const next =
+      currentIndex === -1 || currentIndex === candidates.length - 1
+        ? candidates[0]
+        : candidates[currentIndex + 1];
+    setSelectedId(next.item.id);
+  }
+
+  const boardTap = Gesture.Tap()
+    .enabled(!isZooming)
+    .onEnd((event, success) => {
+      if (success) runOnJS(handleBoardTap)(event.x, event.y);
+    });
+
+  const boardGesture = Gesture.Simultaneous(boardZoomGesture, boardTap);
+
   return (
     // The visible bordered frame is sized to the letterboxed board itself
     // (boardWidth/boardHeight), not the full width/height this screen has
@@ -582,11 +637,11 @@ export function OutfitCanvas({
     // one big, mostly-empty card instead of a board the right shape for its
     // contents.
     <View style={[styles.canvas, { width: boardWidth, height: boardHeight }]}>
-      <GestureDetector gesture={boardZoomGesture}>
+      <GestureDetector gesture={boardGesture}>
         <Animated.View style={[styles.zoomLayer, boardAnimatedStyle]}>
           {items.length === 0 && <Text style={styles.emptyText}>{t('canvas.empty')}</Text>}
 
-          {resolveLayout(items, layout).map(({ item, itemLayout, zIndex }) => (
+          {resolved.map(({ item, itemLayout, zIndex }) => (
             <DraggableItem
               key={item.id}
               item={item}
@@ -596,10 +651,6 @@ export function OutfitCanvas({
               displayScale={displayScale}
               disabled={isZooming}
               onChange={(next) => onLayoutChange(item.id, toFraction(next))}
-              onSelect={() => {
-                setSelectedId((current) => (current === item.id ? null : item.id));
-                bringToFront(item.id);
-              }}
               onTouch={() => bringToFront(item.id)}
             />
           ))}

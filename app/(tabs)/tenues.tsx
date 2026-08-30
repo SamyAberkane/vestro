@@ -1,7 +1,9 @@
+import { Ionicons } from '@expo/vector-icons';
 import { router, useFocusEffect } from 'expo-router';
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   LayoutChangeEvent,
+  RefreshControl,
   ScrollView,
   StyleSheet,
   Text,
@@ -12,9 +14,11 @@ import {
 
 import { ConfirmModal } from '@/components/confirm-modal';
 import { OutfitPreview } from '@/components/outfit-canvas';
+import { RefreshingBadge } from '@/components/refreshing-badge';
 import { ScreenBackground } from '@/components/screen-background';
 import { AppColors, VestroFonts } from '@/constants/theme';
 import { useI18n } from '@/i18n/context';
+import { fetchActiveLook, saveActiveLook, subscribeToActiveLookChanged } from '@/lib/active-look';
 import { alert } from '@/lib/alert';
 import { fetchClothingItems } from '@/lib/clothing';
 import { deleteOutfit, fetchOutfits } from '@/lib/outfits';
@@ -38,6 +42,8 @@ function OutfitCard({
   isSelected,
   onPress,
   onLongPress,
+  onWear,
+  isWorn,
 }: {
   outfit: Outfit;
   items: ClothingItem[];
@@ -46,8 +52,10 @@ function OutfitCard({
   isSelected: boolean;
   onPress: () => void;
   onLongPress: () => void;
+  onWear: () => void;
+  isWorn: boolean;
 }) {
-  const { tPlural } = useI18n();
+  const { t, tPlural } = useI18n();
   const { colors: VestroColors } = useAppTheme();
   const styles = useMemo(() => createStyles(VestroColors), [VestroColors]);
   const [size, setSize] = useState(0);
@@ -67,6 +75,21 @@ function OutfitCard({
           <View style={[styles.checkBadge, isSelected && styles.checkBadgeActive]}>
             {isSelected && <Text style={styles.checkGlyph}>✓</Text>}
           </View>
+        )}
+
+        {!selectionMode && (
+          <TouchableOpacity
+            style={[styles.wearQuickButton, isWorn && styles.wearQuickButtonActive]}
+            onPress={onWear}
+            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+            accessibilityLabel={t(isWorn ? 'home.currentlyWornBadge' : 'home.wearButton')}
+          >
+            <Ionicons
+              name={isWorn ? 'shirt' : 'shirt-outline'}
+              size={14}
+              color={VestroColors.buttonText}
+            />
+          </TouchableOpacity>
         )}
 
         {size > 0 && (
@@ -100,6 +123,8 @@ export default function TenuesScreen() {
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
   const [bulkDeleteConfirmVisible, setBulkDeleteConfirmVisible] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
+  const [activeLookItemIds, setActiveLookItemIds] = useState<number[] | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
 
   const availableWidth = windowWidth - CONTENT_PADDING * 2;
   const numColumns = Math.max(
@@ -108,24 +133,54 @@ export default function TenuesScreen() {
   );
   const cardWidth = (availableWidth - GRID_GAP * (numColumns - 1)) / numColumns;
 
+  const loadData = useCallback(async () => {
+    try {
+      const [loadedClothes, loadedOutfits] = await Promise.all([
+        fetchClothingItems(),
+        fetchOutfits(),
+      ]);
+      setClothes(loadedClothes);
+      setOutfits(loadedOutfits);
+    } catch (error) {
+      alert(t('common.errorTitle'), String(error instanceof Error ? error.message : error));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   useFocusEffect(
     useCallback(() => {
-      async function load() {
-        try {
-          const [loadedClothes, loadedOutfits] = await Promise.all([
-            fetchClothingItems(),
-            fetchOutfits(),
-          ]);
-          setClothes(loadedClothes);
-          setOutfits(loadedOutfits);
-        } catch (error) {
-          alert(t('common.errorTitle'), String(error instanceof Error ? error.message : error));
-        }
-      }
-
-      load();
-    }, [])
+      loadData();
+    }, [loadData])
   );
+
+  async function handleRefresh() {
+    setRefreshing(true);
+    await loadData();
+    setRefreshing(false);
+  }
+
+  useEffect(() => {
+    async function loadActiveLook() {
+      try {
+        const look = await fetchActiveLook();
+        setActiveLookItemIds(look?.itemIds ?? []);
+      } catch (error) {
+        alert(t('common.errorTitle'), String(error instanceof Error ? error.message : error));
+      }
+    }
+
+    loadActiveLook();
+    return subscribeToActiveLookChanged(loadActiveLook);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  function isOutfitWorn(outfit: Outfit) {
+    if (activeLookItemIds === null) return false;
+    return (
+      activeLookItemIds.length === outfit.itemIds.length &&
+      activeLookItemIds.every((itemId) => outfit.itemIds.includes(itemId))
+    );
+  }
 
   function toggleSelectionMode() {
     setSelectionMode((current) => !current);
@@ -153,6 +208,20 @@ export default function TenuesScreen() {
       return;
     }
     router.push(`/create-outfit?id=${outfit.id}`);
+  }
+
+  // Lets a user equip an outfit straight from the grid instead of having to
+  // open the full editor (name field, category tabs, delete button) just to
+  // reach the "wear this outfit" button buried inside it. Stays right here —
+  // the card's icon flips to the filled/worn state via isOutfitWorn once
+  // activeLookItemIds updates (saveActiveLook triggers that through
+  // subscribeToActiveLookChanged above), no navigation needed.
+  async function handleQuickWear(outfit: Outfit) {
+    try {
+      await saveActiveLook({ itemIds: outfit.itemIds, layout: outfit.layout ?? {} });
+    } catch (error) {
+      alert(t('common.errorTitle'), String(error instanceof Error ? error.message : error));
+    }
   }
 
   function handleCardLongPress(outfit: Outfit) {
@@ -192,7 +261,12 @@ export default function TenuesScreen() {
     <ScreenBackground style={styles.screen}>
       <ScrollView
         contentContainerStyle={[styles.content, selectionMode && styles.contentWithSelectionBar]}
+        refreshControl={
+          <RefreshControl refreshing={refreshing} onRefresh={handleRefresh} tintColor={VestroColors.ink} />
+        }
       >
+        <RefreshingBadge visible={refreshing} color={VestroColors.ink} />
+
         <View style={styles.header}>
           <View>
             <Text style={styles.title}>{t('outfits.title')}</Text>
@@ -239,6 +313,8 @@ export default function TenuesScreen() {
                   isSelected={selectedIds.has(outfit.id)}
                   onPress={() => handleCardPress(outfit)}
                   onLongPress={() => handleCardLongPress(outfit)}
+                  onWear={() => handleQuickWear(outfit)}
+                  isWorn={isOutfitWorn(outfit)}
                 />
               );
             })}
@@ -408,6 +484,21 @@ const createStyles = (VestroColors: AppColors) => StyleSheet.create({
   checkBadgeActive: {
     backgroundColor: VestroColors.ink,
     borderColor: VestroColors.ink,
+  },
+  wearQuickButton: {
+    position: 'absolute',
+    top: 8,
+    left: 8,
+    zIndex: 1,
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    backgroundColor: VestroColors.ink,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  wearQuickButtonActive: {
+    backgroundColor: VestroColors.accent,
   },
   checkGlyph: {
     fontFamily: VestroFonts.sansSemiBold,

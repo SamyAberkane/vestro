@@ -1,4 +1,3 @@
-import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from 'expo-router';
 import * as ImagePicker from 'expo-image-picker';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -12,13 +11,6 @@ import {
   useWindowDimensions,
   View,
 } from 'react-native';
-import Animated, {
-  Easing,
-  useAnimatedStyle,
-  useSharedValue,
-  withRepeat,
-  withTiming,
-} from 'react-native-reanimated';
 
 import { ClothingOptionsSheet } from '@/components/clothing-options-sheet';
 import { ClothingPreviewModal } from '@/components/clothing-preview-modal';
@@ -26,6 +18,7 @@ import { ColorPickerModal } from '@/components/color-picker-modal';
 import { ConfirmModal } from '@/components/confirm-modal';
 import { PaywallModal } from '@/components/paywall-modal';
 import { ProcessingOverlay } from '@/components/processing-overlay';
+import { RefreshingBadge } from '@/components/refreshing-badge';
 import { ScreenBackground } from '@/components/screen-background';
 import { StickerImage } from '@/components/sticker-image';
 import { AppColors, VestroCategories, VestroFonts, VestroPalette } from '@/constants/theme';
@@ -48,52 +41,6 @@ import { removeBackground } from '@/utils/remove-background';
 // constants so the column-count math below stays readable.
 const CONTENT_PADDING = 20;
 const GRID_GAP = 16;
-
-// The native RefreshControl spinner doesn't reliably render on this screen
-// (confirmed live: pulling down does trigger a real reload, but nothing
-// visible ever appears) — this is a fully custom, always-visible stand-in
-// that only depends on the `refreshing` state we already control, not on
-// whatever native rendering quirk is swallowing the system one.
-function RefreshingBadge({ visible, color }: { visible: boolean; color: string }) {
-  const { t } = useI18n();
-  const rotation = useSharedValue(0);
-
-  useEffect(() => {
-    if (visible) {
-      rotation.value = withRepeat(withTiming(360, { duration: 900, easing: Easing.linear }), -1);
-    } else {
-      rotation.value = 0;
-    }
-  }, [visible, rotation]);
-
-  const iconStyle = useAnimatedStyle(() => ({ transform: [{ rotate: `${rotation.value}deg` }] }));
-
-  if (!visible) return null;
-
-  return (
-    <View style={badgeStyles.row} pointerEvents="none">
-      <Animated.View style={iconStyle}>
-        <Ionicons name="refresh" size={14} color={color} />
-      </Animated.View>
-      <Text style={[badgeStyles.text, { color }]}>{t('dressing.refreshing')}</Text>
-    </View>
-  );
-}
-
-const badgeStyles = StyleSheet.create({
-  row: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 8,
-    paddingTop: 14,
-  },
-  text: {
-    fontFamily: VestroFonts.sansMedium,
-    fontSize: 12,
-    letterSpacing: 0.5,
-  },
-});
 
 export default function DressingScreen() {
   const { t, tCategory, tPlural, language } = useI18n();

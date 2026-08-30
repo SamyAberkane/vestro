@@ -17,7 +17,7 @@ import { CANVAS_REFERENCE_SIZE, CanvasLayout, OutfitCanvas } from '@/components/
 import { StickerImage } from '@/components/sticker-image';
 import { AppColors, VestroCategories, VestroFonts } from '@/constants/theme';
 import { useI18n } from '@/i18n/context';
-import { saveActiveLook } from '@/lib/active-look';
+import { fetchActiveLook, saveActiveLook, subscribeToActiveLookChanged } from '@/lib/active-look';
 import { alert } from '@/lib/alert';
 import { fetchClothingItems } from '@/lib/clothing';
 import { deleteOutfit, fetchOutfits, insertOutfit, updateOutfit } from '@/lib/outfits';
@@ -47,6 +47,9 @@ export default function CreateOutfitScreen() {
   const [confirmDeleteVisible, setConfirmDeleteVisible] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
   const [confirmClearVisible, setConfirmClearVisible] = useState(false);
+  // null = not loaded yet, so the wear button never flashes "worn" before
+  // this resolves — same pattern as the home screen (see index.tsx).
+  const [activeLookItemIds, setActiveLookItemIds] = useState<number[] | null>(null);
   // Item positions are stored as fractions of the canvas size (see
   // outfit-canvas.tsx), so they always fill whatever box is rendered here —
   // this screen scrolls, so there's room to be generous and use the same
@@ -130,6 +133,21 @@ export default function CreateOutfitScreen() {
     loadData();
   }, [id]);
 
+  useEffect(() => {
+    async function loadActiveLook() {
+      try {
+        const look = await fetchActiveLook();
+        setActiveLookItemIds(look?.itemIds ?? []);
+      } catch (error) {
+        alert(t('common.errorTitle'), String(error instanceof Error ? error.message : error));
+      }
+    }
+
+    loadActiveLook();
+    return subscribeToActiveLookChanged(loadActiveLook);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   function toggleSelect(category: string, itemId: number) {
     setSelected((current) => {
       const currentIds = current[category] ?? [];
@@ -176,6 +194,14 @@ export default function CreateOutfitScreen() {
     return { itemIds, layout: savedLayout };
   }
 
+  // Same itemIds-only comparison as the home screen's isCurrentlyWorn — the
+  // board's exact positions don't matter for "worn", only which clothes.
+  const currentItemIds = Object.values(selected).flat();
+  const isCurrentlyWorn =
+    activeLookItemIds !== null &&
+    activeLookItemIds.length === currentItemIds.length &&
+    activeLookItemIds.every((itemId) => currentItemIds.includes(itemId));
+
   async function saveOutfit() {
     const { itemIds, layout: savedLayout } = selectedLookPayload();
 
@@ -203,11 +229,9 @@ export default function CreateOutfitScreen() {
     router.back();
   }
 
-  // Sets this outfit as today's active look and jumps to the home screen so
-  // the effect is immediately visible there — the home screen picks this up
-  // via subscribeToActiveLookChanged (see lib/active-look.ts) rather than
-  // needing a focus-triggered refetch that would otherwise risk clobbering
-  // whatever the user has in progress there.
+  // Sets this outfit as today's active look and stays right here — the
+  // button below flips to the same "currently worn" badge the home screen
+  // shows, via isCurrentlyWorn above, instead of navigating anywhere.
   async function wearThisOutfit() {
     const { itemIds, layout: savedLayout } = selectedLookPayload();
 
@@ -219,7 +243,6 @@ export default function CreateOutfitScreen() {
     try {
       await saveActiveLook({ itemIds, layout: savedLayout });
       alert(t('home.wornTitle'), t('home.wornMessage'));
-      router.push('/(tabs)');
     } catch (error) {
       alert(t('common.errorTitle'), String(error instanceof Error ? error.message : error));
     }
@@ -297,9 +320,22 @@ export default function CreateOutfitScreen() {
             )}
 
             {isEditing && (
-              <TouchableOpacity style={styles.wearOutfitButton} onPress={wearThisOutfit}>
-                <Text style={styles.wearOutfitButtonText}>{t('createOutfit.wearThisOutfit')}</Text>
-              </TouchableOpacity>
+              isCurrentlyWorn ? (
+                // Still tappable, not just a static badge — isCurrentlyWorn only
+                // compares which clothes are selected, not their board positions,
+                // so re-arranging items on an outfit that's already "worn" leaves
+                // this showing worn with nothing to press to save the new
+                // positions. Tapping re-runs wearThisOutfit, which always saves
+                // whatever's live on the board right now.
+                <TouchableOpacity style={styles.wornBanner} onPress={wearThisOutfit}>
+                  <Text style={styles.wornBannerCheck}>✓</Text>
+                  <Text style={styles.wornBannerText}>{t('home.currentlyWornBadge')}</Text>
+                </TouchableOpacity>
+              ) : (
+                <TouchableOpacity style={styles.wearOutfitButton} onPress={wearThisOutfit}>
+                  <Text style={styles.wearOutfitButtonText}>{t('createOutfit.wearThisOutfit')}</Text>
+                </TouchableOpacity>
+              )
             )}
 
             <View style={styles.priceToggleRow}>
@@ -308,7 +344,6 @@ export default function CreateOutfitScreen() {
                 value={showPrice}
                 onValueChange={setShowPrice}
                 trackColor={{ false: VestroColors.border, true: VestroColors.ink }}
-                thumbColor={VestroColors.buttonText}
                 ios_backgroundColor={VestroColors.border}
               />
             </View>
@@ -478,6 +513,27 @@ const createStyles = (VestroColors: AppColors) => StyleSheet.create({
     justifyContent: 'center',
   },
   wearOutfitButtonText: {
+    fontFamily: VestroFonts.sansSemiBold,
+    fontSize: 11,
+    letterSpacing: 2,
+    textTransform: 'uppercase',
+    color: VestroColors.buttonText,
+  },
+  wornBanner: {
+    marginTop: 14,
+    height: 46,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 10,
+    backgroundColor: VestroColors.accent,
+  },
+  wornBannerCheck: {
+    fontFamily: VestroFonts.sansBold,
+    fontSize: 16,
+    color: VestroColors.buttonText,
+  },
+  wornBannerText: {
     fontFamily: VestroFonts.sansSemiBold,
     fontSize: 11,
     letterSpacing: 2,

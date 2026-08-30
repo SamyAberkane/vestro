@@ -2,6 +2,7 @@ import * as ImagePicker from 'expo-image-picker';
 import { useFocusEffect } from 'expo-router';
 import { useCallback, useMemo, useRef, useState } from 'react';
 import {
+  RefreshControl,
   ScrollView,
   StyleSheet,
   Text,
@@ -15,6 +16,7 @@ import { ClothingPreviewModal } from '@/components/clothing-preview-modal';
 import { ColorPickerModal } from '@/components/color-picker-modal';
 import { ConfirmModal } from '@/components/confirm-modal';
 import { ProcessingOverlay } from '@/components/processing-overlay';
+import { RefreshingBadge } from '@/components/refreshing-badge';
 import { ScreenBackground } from '@/components/screen-background';
 import { StickerImage } from '@/components/sticker-image';
 import { AppColors, VestroCategories, VestroFonts } from '@/constants/theme';
@@ -54,6 +56,7 @@ export default function WishlistScreen() {
   const [selectionMode, setSelectionMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
   const [bulkDeleteConfirmVisible, setBulkDeleteConfirmVisible] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
 
   function openColorPicker(
     onPick: (color: string | undefined) => void,
@@ -78,21 +81,28 @@ export default function WishlistScreen() {
     colorDismissRef.current = null;
   }
 
+  const loadClothes = useCallback(async () => {
+    try {
+      setClothes(await fetchClothingItems());
+    } catch (error) {
+      alert(t('common.errorTitle'), String(error instanceof Error ? error.message : error));
+    }
+
+    setIsLoaded(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   useFocusEffect(
     useCallback(() => {
-      async function loadClothes() {
-        try {
-          setClothes(await fetchClothingItems());
-        } catch (error) {
-          alert(t('common.errorTitle'), String(error instanceof Error ? error.message : error));
-        }
-
-        setIsLoaded(true);
-      }
-
       loadClothes();
-    }, [])
+    }, [loadClothes])
   );
+
+  async function handleRefresh() {
+    setRefreshing(true);
+    await loadClothes();
+    setRefreshing(false);
+  }
 
   const wishlistItems = clothes.filter(
     (item) => item.status === 'wishlist'
@@ -214,15 +224,7 @@ export default function WishlistScreen() {
     if (firstFailure) {
       const error = firstFailure.reason;
       alert(t('common.errorTitle'), String(error instanceof Error ? error.message : error));
-      loadClothesAfterFailure();
-    }
-  }
-
-  async function loadClothesAfterFailure() {
-    try {
-      setClothes(await fetchClothingItems());
-    } catch (error) {
-      alert(t('common.errorTitle'), String(error instanceof Error ? error.message : error));
+      loadClothes();
     }
   }
 
@@ -232,7 +234,14 @@ export default function WishlistScreen() {
 
   return (
     <ScreenBackground style={styles.screen}>
-    <ScrollView contentContainerStyle={[styles.content, selectionMode && styles.contentWithSelectionBar]}>
+    <ScrollView
+      contentContainerStyle={[styles.content, selectionMode && styles.contentWithSelectionBar]}
+      refreshControl={
+        <RefreshControl refreshing={refreshing} onRefresh={handleRefresh} tintColor={VestroColors.ink} />
+      }
+    >
+      <RefreshingBadge visible={refreshing} color={VestroColors.ink} />
+
       <View style={styles.header}>
         <View>
           <Text style={styles.title}>{t('wishlist.title')}</Text>
