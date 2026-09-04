@@ -1,5 +1,6 @@
-import { useEffect, useState } from 'react';
-import { Image, StyleSheet, Text, View } from 'react-native';
+import { Image } from 'expo-image';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { StyleSheet, Text, View } from 'react-native';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import Animated, {
   runOnJS,
@@ -48,6 +49,7 @@ export type CanvasItem = {
   category: string;
   color?: string;
   image?: string;
+  imagePath?: string;
   price?: number;
 };
 
@@ -288,22 +290,34 @@ function ResizeHandle({
 }) {
   const sign = CORNER_SIGN[corner];
 
-  const resize = Gesture.Pan()
-    .onUpdate((event) => {
-      'worklet';
-      // The handle is dragged in real screen pixels, but the item it's
-      // resizing lives in the fixed reference space and is only ever made
-      // to look bigger or smaller on screen via displayScale — so a drag of
-      // the same *visual* distance should always produce the same size
-      // change, regardless of how zoomed in or out this particular board is.
-      const reach = event.translationX * sign.x + event.translationY * sign.y;
-      const factor = 1 + reach / (ITEM_SIZE * displayScale);
-      currentScale.value = Math.min(Math.max(savedScale.value * factor, MIN_SCALE), MAX_SCALE);
-    })
-    .onEnd(() => {
-      savedScale.value = currentScale.value;
-      runOnJS(onCommit)();
-    });
+  // onCommit is a fresh closure from DraggableItem on every render (it reads
+  // the item's own latest onChange) — going through a ref instead of putting
+  // it in the useMemo below keeps the underlying native Pan handler from
+  // being torn down and rebuilt on every render, which is what let a finger
+  // still resting on the handle end up attached to an already-destroyed
+  // gesture (see the matching comment on DraggableItem's `pan`).
+  const onCommitRef = useRef(onCommit);
+  onCommitRef.current = onCommit;
+  const handleCommit = useCallback(() => onCommitRef.current(), []);
+
+  const resize = useMemo(
+    () =>
+      Gesture.Pan().onUpdate((event) => {
+        'worklet';
+        // The handle is dragged in real screen pixels, but the item it's
+        // resizing lives in the fixed reference space and is only ever made
+        // to look bigger or smaller on screen via displayScale — so a drag of
+        // the same *visual* distance should always produce the same size
+        // change, regardless of how zoomed in or out this particular board is.
+        const reach = event.translationX * sign.x + event.translationY * sign.y;
+        const factor = 1 + reach / (ITEM_SIZE * displayScale);
+        currentScale.value = Math.min(Math.max(savedScale.value * factor, MIN_SCALE), MAX_SCALE);
+      }).onEnd(() => {
+        savedScale.value = currentScale.value;
+        runOnJS(handleCommit)();
+      }),
+    [sign, displayScale, currentScale, savedScale, handleCommit]
+  );
 
   return (
     <GestureDetector gesture={resize}>
@@ -366,57 +380,81 @@ function DraggableItem({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [layout.x, layout.y, layout.scale, displayScale]);
 
-  function commit() {
+  // onChange/onTouch are fresh closures from OutfitCanvas on every render
+  // (they capture that render's item.id) — going through refs instead of
+  // depending on them directly lets `commit`/`handleTouch` stay referentially
+  // stable, which in turn lets the `pan` gesture below stay memoized. Without
+  // this, merely touching ANY item in the outfit re-renders OutfitCanvas
+  // (via onTouch → bringToFront → setLayout in the parent), which rebuilt
+  // every item's Gesture.Pan() from scratch on every render — including the
+  // one still actively being dragged, tearing down and reattaching its
+  // native handler mid-touch. That's what produced the freeze after a bit of
+  // dragging around the board: a stale/orphaned native gesture recognizer
+  // left the JS↔UI thread handshake stuck.
+  const onChangeRef = useRef(onChange);
+  onChangeRef.current = onChange;
+  const onTouchRef = useRef(onTouch);
+  onTouchRef.current = onTouch;
+
+  const commit = useCallback(() => {
     // Stacking order (z) isn't part of this — onTouch already bumped it to
     // the front at the start of this gesture via a separate call, and
     // OutfitCanvas merges that into the saved entry rather than this one
     // replacing it wholesale (see handleLayoutChange). translateX/Y are
     // on-screen pixels — convert back to the fixed reference space (what
     // onChange/toFraction expect) before saving.
-    onChange({
+    onChangeRef.current({
       x: translateX.value / displayScale,
       y: translateY.value / displayScale,
       scale: currentScale.value,
     });
-  }
+  }, [translateX, translateY, currentScale, displayScale]);
 
-  const pan = Gesture.Pan()
-    .enabled(!disabled)
-    // Capped to a single finger so a second finger landing (the start of a
-    // board-wide pinch-to-zoom — see OutfitCanvas) makes this fail instead of
-    // both gestures fighting over the same touch; the corner handles below
-    // remain the only way to resize an item, freeing a pinch anywhere on the
-    // board to always mean "zoom", the same way it does on a photo.
-    .minPointers(1)
-    .maxPointers(1)
-    .onStart(() => {
-      'worklet';
-      runOnJS(onTouch)();
-    })
-    .onChange((event) => {
-      'worklet';
-      // Stops the drag dead at the allowed-overflow edge instead of letting
-      // it past and clamping afterwards, matching clampToCanvas's own
-      // bounds exactly (see its comment and MAX_OVERFLOW_FRACTION) so the
-      // live drag and the saved/resolved position can never disagree — an
-      // item can hang up to half off any side, on any board shape.
-      const boardWidthPx = CANVAS_REFERENCE_SIZE.width * displayScale;
-      const boardHeightPx = CANVAS_REFERENCE_SIZE.height * displayScale;
-      const size = itemSize * currentScale.value;
-      const overflow = size * MAX_OVERFLOW_FRACTION;
-      // Same center-anchored-scale correction as clampToCanvas above.
-      const centerShift = (size - itemSize) / 2;
-      const minX = centerShift - overflow;
-      const minY = centerShift - overflow;
-      const maxX = Math.max(minX, boardWidthPx - itemSize / 2 - size / 2 + overflow);
-      const maxY = Math.max(minY, boardHeightPx - itemSize / 2 - size / 2 + overflow);
+  const handleTouch = useCallback(() => onTouchRef.current(), []);
 
-      translateX.value = Math.min(Math.max(translateX.value + event.changeX, minX), maxX);
-      translateY.value = Math.min(Math.max(translateY.value + event.changeY, minY), maxY);
-    })
-    .onEnd(() => {
-      runOnJS(commit)();
-    });
+  const pan = useMemo(
+    () =>
+      Gesture.Pan()
+        .enabled(!disabled)
+        // Capped to a single finger so a second finger landing (the start of
+        // a board-wide pinch-to-zoom — see OutfitCanvas) makes this fail
+        // instead of both gestures fighting over the same touch; the corner
+        // handles below remain the only way to resize an item, freeing a
+        // pinch anywhere on the board to always mean "zoom", the same way it
+        // does on a photo.
+        .minPointers(1)
+        .maxPointers(1)
+        .onStart(() => {
+          'worklet';
+          runOnJS(handleTouch)();
+        })
+        .onChange((event) => {
+          'worklet';
+          // Stops the drag dead at the allowed-overflow edge instead of
+          // letting it past and clamping afterwards, matching
+          // clampToCanvas's own bounds exactly (see its comment and
+          // MAX_OVERFLOW_FRACTION) so the live drag and the saved/resolved
+          // position can never disagree — an item can hang up to half off
+          // any side, on any board shape.
+          const boardWidthPx = CANVAS_REFERENCE_SIZE.width * displayScale;
+          const boardHeightPx = CANVAS_REFERENCE_SIZE.height * displayScale;
+          const size = itemSize * currentScale.value;
+          const overflow = size * MAX_OVERFLOW_FRACTION;
+          // Same center-anchored-scale correction as clampToCanvas above.
+          const centerShift = (size - itemSize) / 2;
+          const minX = centerShift - overflow;
+          const minY = centerShift - overflow;
+          const maxX = Math.max(minX, boardWidthPx - itemSize / 2 - size / 2 + overflow);
+          const maxY = Math.max(minY, boardHeightPx - itemSize / 2 - size / 2 + overflow);
+
+          translateX.value = Math.min(Math.max(translateX.value + event.changeX, minX), maxX);
+          translateY.value = Math.min(Math.max(translateY.value + event.changeY, minY), maxY);
+        })
+        .onEnd(() => {
+          runOnJS(commit)();
+        }),
+    [disabled, displayScale, itemSize, currentScale, translateX, translateY, commit, handleTouch]
+  );
 
   const gesture = pan;
 
@@ -434,7 +472,11 @@ function DraggableItem({
         style={[styles.item, { width: itemSize, height: itemSize, zIndex }, animatedStyle]}
       >
         {item.image ? (
-          <Image source={{ uri: item.image }} style={styles.image} resizeMode="contain" />
+          <Image
+            source={{ uri: item.image, cacheKey: item.imagePath }}
+            style={styles.image}
+            contentFit="contain"
+          />
         ) : (
           <View
             style={[
@@ -519,48 +561,68 @@ export function OutfitCanvas({
   const savedBoardTranslateX = useSharedValue(0);
   const savedBoardTranslateY = useSharedValue(0);
 
-  function handleZoomStart() {
-    setIsZooming(true);
-  }
+  const handleZoomStart = useCallback(() => setIsZooming(true), []);
+  const handleZoomEnd = useCallback(() => setIsZooming(false), []);
 
-  function handleZoomEnd() {
-    setIsZooming(false);
-  }
-
-  const boardPinch = Gesture.Pinch()
-    .onStart(() => {
-      'worklet';
-      runOnJS(handleZoomStart)();
-    })
-    .onUpdate((event) => {
-      boardScale.value = Math.min(Math.max(event.scale, MIN_BOARD_ZOOM), MAX_BOARD_ZOOM);
-    })
-    .onEnd(() => {
-      boardScale.value = withSpring(1);
-      boardTranslateX.value = withSpring(0);
-      boardTranslateY.value = withSpring(0);
-      savedBoardTranslateX.value = 0;
-      savedBoardTranslateY.value = 0;
-      runOnJS(handleZoomEnd)();
-    });
+  // Memoized (deps are all stable shared values, so this effectively builds
+  // once) for the same reason as DraggableItem's `pan` — these gestures sit
+  // on the outer view wrapping every item on the board, so rebuilding them
+  // on every render (which used to happen on every single item touch, via
+  // bringToFront → setLayout in the parent → a re-render here) risked
+  // tearing down the whole board's native gesture handler mid-touch.
+  const boardPinch = useMemo(
+    () =>
+      Gesture.Pinch()
+        .onStart(() => {
+          'worklet';
+          runOnJS(handleZoomStart)();
+        })
+        .onUpdate((event) => {
+          boardScale.value = Math.min(Math.max(event.scale, MIN_BOARD_ZOOM), MAX_BOARD_ZOOM);
+        })
+        .onEnd(() => {
+          boardScale.value = withSpring(1);
+          boardTranslateX.value = withSpring(0);
+          boardTranslateY.value = withSpring(0);
+          savedBoardTranslateX.value = 0;
+          savedBoardTranslateY.value = 0;
+          runOnJS(handleZoomEnd)();
+        }),
+    [
+      boardScale,
+      boardTranslateX,
+      boardTranslateY,
+      savedBoardTranslateX,
+      savedBoardTranslateY,
+      handleZoomStart,
+      handleZoomEnd,
+    ]
+  );
 
   // Two fingers only, so this never competes with an item's own 1-finger
   // drag (see DraggableItem's pan) — panning around a zoomed-in board only
   // makes sense once you're already pinching with two fingers anyway.
-  const boardPan = Gesture.Pan()
-    .minPointers(2)
-    .maxPointers(2)
-    .onUpdate((event) => {
-      if (boardScale.value <= 1) return;
-      boardTranslateX.value = savedBoardTranslateX.value + event.translationX;
-      boardTranslateY.value = savedBoardTranslateY.value + event.translationY;
-    })
-    .onEnd(() => {
-      savedBoardTranslateX.value = boardTranslateX.value;
-      savedBoardTranslateY.value = boardTranslateY.value;
-    });
+  const boardPan = useMemo(
+    () =>
+      Gesture.Pan()
+        .minPointers(2)
+        .maxPointers(2)
+        .onUpdate((event) => {
+          if (boardScale.value <= 1) return;
+          boardTranslateX.value = savedBoardTranslateX.value + event.translationX;
+          boardTranslateY.value = savedBoardTranslateY.value + event.translationY;
+        })
+        .onEnd(() => {
+          savedBoardTranslateX.value = boardTranslateX.value;
+          savedBoardTranslateY.value = boardTranslateY.value;
+        }),
+    [boardScale, boardTranslateX, boardTranslateY, savedBoardTranslateX, savedBoardTranslateY]
+  );
 
-  const boardZoomGesture = Gesture.Simultaneous(boardPinch, boardPan);
+  const boardZoomGesture = useMemo(
+    () => Gesture.Simultaneous(boardPinch, boardPan),
+    [boardPinch, boardPan]
+  );
 
   const boardAnimatedStyle = useAnimatedStyle(() => ({
     transform: [
@@ -586,6 +648,17 @@ export function OutfitCanvas({
 
   const resolved = resolveLayout(items, layout);
 
+  // handleBoardTap needs this render's `resolved`/`selectedId` to hit-test
+  // correctly, but boardTap below stays memoized regardless (deps: just
+  // isZooming) — refs let the tap handler read the latest values without
+  // forcing the gesture itself to be rebuilt on every board re-render (see
+  // the comment on boardPinch above for why that rebuilding was the actual
+  // freeze bug).
+  const resolvedRef = useRef(resolved);
+  resolvedRef.current = resolved;
+  const selectedIdRef = useRef(selectedId);
+  selectedIdRef.current = selectedId;
+
   // Tapping selects the topmost item at that point, same as always — but a
   // second tap in the exact same spot steps to the next item down the stack
   // instead of re-picking the same topmost one. Needed because the tappable
@@ -595,8 +668,8 @@ export function OutfitCanvas({
   // doesn't bringToFront here — only an actual drag does (via onTouch) —
   // because reordering z on every tap would scramble the stack order
   // mid-cycle, making "next" unpredictable from one tap to the next.
-  function handleBoardTap(x: number, y: number) {
-    const candidates = resolved
+  const handleBoardTap = useCallback((x: number, y: number) => {
+    const candidates = resolvedRef.current
       .filter(({ itemLayout }) => {
         const box = boxForItem(itemLayout, displayScale);
         return x >= box.left && x <= box.right && y >= box.top && y <= box.bottom;
@@ -611,21 +684,30 @@ export function OutfitCanvas({
       return;
     }
 
-    const currentIndex = candidates.findIndex((candidate) => candidate.item.id === selectedId);
+    const currentIndex = candidates.findIndex(
+      (candidate) => candidate.item.id === selectedIdRef.current
+    );
     const next =
       currentIndex === -1 || currentIndex === candidates.length - 1
         ? candidates[0]
         : candidates[currentIndex + 1];
     setSelectedId(next.item.id);
-  }
+  }, [displayScale]);
 
-  const boardTap = Gesture.Tap()
-    .enabled(!isZooming)
-    .onEnd((event, success) => {
-      if (success) runOnJS(handleBoardTap)(event.x, event.y);
-    });
+  const boardTap = useMemo(
+    () =>
+      Gesture.Tap()
+        .enabled(!isZooming)
+        .onEnd((event, success) => {
+          if (success) runOnJS(handleBoardTap)(event.x, event.y);
+        }),
+    [isZooming, handleBoardTap]
+  );
 
-  const boardGesture = Gesture.Simultaneous(boardZoomGesture, boardTap);
+  const boardGesture = useMemo(
+    () => Gesture.Simultaneous(boardZoomGesture, boardTap),
+    [boardZoomGesture, boardTap]
+  );
 
   return (
     // The visible bordered frame is sized to the letterboxed board itself
@@ -717,7 +799,11 @@ export function OutfitPreview({
             ]}
           >
             {item.image ? (
-              <Image source={{ uri: item.image }} style={styles.image} resizeMode="contain" />
+              <Image
+                source={{ uri: item.image, cacheKey: item.imagePath }}
+                style={styles.image}
+                contentFit="contain"
+              />
             ) : (
               <View
                 style={[

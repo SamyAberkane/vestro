@@ -124,8 +124,18 @@ export default function WishlistScreen() {
   const cardWidth = (availableWidth - GRID_GAP * (numColumns - 1)) / numColumns;
 
   async function updateItem(id: number, patch: Parameters<typeof updateClothingItem>[1]) {
+    // patch.imageDataUri is a raw data URI, not the `image`/`imagePath` fields
+    // ClothingItem is actually rendered from — spreading it as-is left the old
+    // photo showing until the next full reload. Map it onto `image` for an
+    // immediate preview and drop the now-stale `imagePath` (its cache key)
+    // rather than let a new photo render under an old cache entry.
+    const { imageDataUri, ...rest } = patch;
     setClothes((currentClothes) =>
-      currentClothes.map((clothing) => (clothing.id === id ? { ...clothing, ...patch } : clothing))
+      currentClothes.map((clothing) =>
+        clothing.id === id
+          ? { ...clothing, ...rest, ...(imageDataUri ? { image: imageDataUri, imagePath: undefined } : null) }
+          : clothing
+      )
     );
 
     try {
@@ -332,7 +342,12 @@ export default function WishlistScreen() {
                 )}
 
                 {item.image && (
-                  <StickerImage uri={item.image} containerStyle={styles.image} resizeMode="cover" />
+                  <StickerImage
+                    uri={item.image}
+                    cacheKey={item.imagePath}
+                    containerStyle={styles.image}
+                    resizeMode="cover"
+                  />
                 )}
                 <Text style={styles.envieBadge}>{t('wishlist.badge')}</Text>
               </View>

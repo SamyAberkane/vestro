@@ -25,6 +25,7 @@ export type ClothingOptionsItem = {
   category: string;
   color?: string;
   image?: string;
+  imagePath?: string;
   price?: number;
   available?: boolean;
   unavailableReason?: string;
@@ -128,7 +129,7 @@ export function ClothingOptionsSheet({
             <View style={styles.header}>
               {item.image ? (
                 <TouchableOpacity style={styles.thumb} onPress={onRequestPhotoChange}>
-                  <StickerImage uri={item.image} containerStyle={styles.thumbImage} />
+                  <StickerImage uri={item.image} cacheKey={item.imagePath} containerStyle={styles.thumbImage} />
                 </TouchableOpacity>
               ) : (
                 <TouchableOpacity

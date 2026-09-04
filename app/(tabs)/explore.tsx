@@ -139,8 +139,18 @@ async function handleRefresh() {
 }
 
 async function updateOptionsItem(id: number, patch: Parameters<typeof updateClothingItem>[1]) {
+  // patch.imageDataUri is a raw data URI, not the `image`/`imagePath` fields
+  // ClothingItem is actually rendered from — spreading it as-is left the old
+  // photo showing until the next full reload. Map it onto `image` for an
+  // immediate preview and drop the now-stale `imagePath` (its cache key)
+  // rather than let a new photo render under an old cache entry.
+  const { imageDataUri, ...rest } = patch;
   setClothes((currentClothes) =>
-    currentClothes.map((clothing) => (clothing.id === id ? { ...clothing, ...patch } : clothing))
+    currentClothes.map((clothing) =>
+      clothing.id === id
+        ? { ...clothing, ...rest, ...(imageDataUri ? { image: imageDataUri, imagePath: undefined } : null) }
+        : clothing
+    )
   );
 
   try {
@@ -410,6 +420,7 @@ async function handleOptionsPhotoChange() {
               {item.image ? (
                 <StickerImage
                   uri={item.image}
+                  cacheKey={item.imagePath}
                   containerStyle={[
                     { width: cardWidth, height: cardWidth },
                     item.available === false && styles.unavailableVisual,

@@ -184,6 +184,7 @@ const fr = {
   'photoIssue.no_item_detected': 'Aucun vêtement n’a été reconnu sur cette photo.',
   'photoIssue.other': 'Cette photo ne permet pas un bon résultat — réessaie avec une autre.',
   'photoIssue.quota_exceeded': 'Limite de 50 photos par mois atteinte — réessaie le mois prochain.',
+  'photoIssue.technical_error': 'Problème technique — réessaie dans un instant (ce n’est pas ta photo).',
 
   'auth.tagline': 'Ton dressing, où que tu sois.',
   'auth.emailPlaceholder': 'Adresse email',
@@ -470,6 +471,7 @@ const en: Dictionary = {
   'photoIssue.no_item_detected': 'No clothing item was recognized in this photo.',
   'photoIssue.other': 'This photo won’t give a good result — try another one.',
   'photoIssue.quota_exceeded': 'Monthly limit of 50 photos reached — try again next month.',
+  'photoIssue.technical_error': 'Technical issue — try again in a moment (not your photo’s fault).',
 
   'auth.tagline': 'Your closet, wherever you are.',
   'auth.emailPlaceholder': 'Email address',
@@ -753,6 +755,7 @@ const es: Dictionary = {
   'photoIssue.no_item_detected': 'No se reconoció ninguna prenda en esta foto.',
   'photoIssue.other': 'Esta foto no dará un buen resultado — prueba con otra.',
   'photoIssue.quota_exceeded': 'Límite de 50 fotos al mes alcanzado — vuelve a intentarlo el mes que viene.',
+  'photoIssue.technical_error': 'Problema técnico — vuelve a intentarlo en un momento (no es culpa de tu foto).',
 
   'auth.tagline': 'Tu armario, estés donde estés.',
   'auth.emailPlaceholder': 'Correo electrónico',
@@ -1036,6 +1039,7 @@ const it: Dictionary = {
   'photoIssue.no_item_detected': 'Non è stato riconosciuto alcun capo in questa foto.',
   'photoIssue.other': 'Questa foto non darà un buon risultato — prova con un’altra.',
   'photoIssue.quota_exceeded': 'Limite di 50 foto al mese raggiunto — riprova il mese prossimo.',
+  'photoIssue.technical_error': 'Problema tecnico — riprova tra un momento (non è colpa della tua foto).',
 
   'auth.tagline': 'Il tuo armadio, ovunque tu sia.',
   'auth.emailPlaceholder': 'Indirizzo email',

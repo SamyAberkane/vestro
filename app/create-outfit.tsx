@@ -4,7 +4,6 @@ import {
   LayoutChangeEvent,
   ScrollView,
   StyleSheet,
-  Switch,
   Text,
   TextInput,
   TouchableOpacity,
@@ -15,6 +14,7 @@ import {
 import { ConfirmModal } from '@/components/confirm-modal';
 import { CANVAS_REFERENCE_SIZE, CanvasLayout, OutfitCanvas } from '@/components/outfit-canvas';
 import { StickerImage } from '@/components/sticker-image';
+import { ToggleSwitch } from '@/components/toggle-switch';
 import { AppColors, VestroCategories, VestroFonts } from '@/constants/theme';
 import { useI18n } from '@/i18n/context';
 import { fetchActiveLook, saveActiveLook, subscribeToActiveLookChanged } from '@/lib/active-look';
@@ -340,12 +340,7 @@ export default function CreateOutfitScreen() {
 
             <View style={styles.priceToggleRow}>
               <Text style={styles.priceToggleLabel}>{t('createOutfit.showPrice')}</Text>
-              <Switch
-                value={showPrice}
-                onValueChange={setShowPrice}
-                trackColor={{ false: VestroColors.border, true: VestroColors.ink }}
-                ios_backgroundColor={VestroColors.border}
-              />
+              <ToggleSwitch value={showPrice} onValueChange={setShowPrice} colors={VestroColors} />
             </View>
 
             {Object.values(selected).flat().length > 0 && (
@@ -402,7 +397,12 @@ export default function CreateOutfitScreen() {
                     onPress={() => toggleSelect(currentCategory, item.id)}
                   >
                     {item.image && (
-                      <StickerImage uri={item.image} containerStyle={styles.thumbnailImage} resizeMode="cover" />
+                      <StickerImage
+                        uri={item.image}
+                        cacheKey={item.imagePath}
+                        containerStyle={styles.thumbnailImage}
+                        resizeMode="cover"
+                      />
                     )}
                     {isSelected && (
                       <View style={styles.checkBadge}>

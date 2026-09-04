@@ -1,3 +1,4 @@
+import { invalidateCache, readThroughCache } from '@/lib/offline-cache';
 import { supabase } from '@/lib/supabase';
 import type { ActiveLook } from '@/types/clothing';
 
@@ -19,10 +20,12 @@ export function subscribeToActiveLookChanged(listener: Listener): () => void {
 }
 
 export async function fetchActiveLook(): Promise<ActiveLook | null> {
-  const { data, error } = await supabase.from('active_looks').select('*').maybeSingle();
-  if (error) throw new Error(error.message);
-  if (!data) return null;
-  return { itemIds: data.item_ids, layout: data.layout ?? {} };
+  return readThroughCache('active-look', async () => {
+    const { data, error } = await supabase.from('active_looks').select('*').maybeSingle();
+    if (error) throw new Error(error.message);
+    if (!data) return null;
+    return { itemIds: data.item_ids, layout: data.layout ?? {} };
+  });
 }
 
 export async function saveActiveLook(look: ActiveLook): Promise<void> {
@@ -39,5 +42,6 @@ export async function saveActiveLook(look: ActiveLook): Promise<void> {
   });
 
   if (error) throw new Error(error.message);
+  await invalidateCache('active-look');
   notifyActiveLookChanged();
 }

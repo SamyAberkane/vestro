@@ -5,7 +5,6 @@ import {
   LayoutChangeEvent,
   ScrollView,
   StyleSheet,
-  Switch,
   Text,
   TouchableOpacity,
   useWindowDimensions,
@@ -19,6 +18,7 @@ import { CANVAS_REFERENCE_SIZE, CanvasLayout, OutfitCanvas, OutfitPreview } from
 import { SaveOutfitModal } from '@/components/save-outfit-modal';
 import { ScreenBackground } from '@/components/screen-background';
 import { StickerImage } from '@/components/sticker-image';
+import { ToggleSwitch } from '@/components/toggle-switch';
 import { AppColors, VestroCategories, VestroFonts } from '@/constants/theme';
 import { useI18n } from '@/i18n/context';
 import { LANGUAGES, MONTHS } from '@/i18n/translations';
@@ -401,12 +401,7 @@ export default function HomeScreen() {
 
       <View style={styles.priceToggleRow}>
         <Text style={styles.priceToggleLabel}>{t('createOutfit.showPrice')}</Text>
-        <Switch
-          value={showPrice}
-          onValueChange={setShowPrice}
-          trackColor={{ false: VestroColors.border, true: VestroColors.ink }}
-          ios_backgroundColor={VestroColors.border}
-        />
+        <ToggleSwitch value={showPrice} onValueChange={setShowPrice} colors={VestroColors} />
       </View>
 
       {selectedItems.length > 0 && (
@@ -463,7 +458,12 @@ export default function HomeScreen() {
                 ]}
               >
                 {item.image && (
-                  <StickerImage uri={item.image} containerStyle={styles.thumbnailImage} resizeMode="cover" />
+                  <StickerImage
+                    uri={item.image}
+                    cacheKey={item.imagePath}
+                    containerStyle={styles.thumbnailImage}
+                    resizeMode="cover"
+                  />
                 )}
               </View>
               <View

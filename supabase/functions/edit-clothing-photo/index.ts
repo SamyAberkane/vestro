@@ -40,8 +40,16 @@ const CORS_HEADERS = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 };
 
-const BACKGROUND_HEX = '#FFFFFF';
-const BACKGROUND_RGB = 'RGB(255,255,255)';
+// Chroma-key magenta, not white: a light or white garment (a cream sweater, a
+// white sneaker) sits close enough to white in RGB terms that the client's
+// color-distance cutout (utils/remove-background.ts) can't always tell garment
+// from background, and testers saw exactly that — pale patches eaten out of
+// the middle of a garment, worse on anything with a lot of folds (a full-body
+// dress). No real clothing is ever this exact saturated magenta, so keying on
+// this color instead removes the ambiguity at the source rather than trying
+// to tune the cutout's tolerance around it.
+const BACKGROUND_HEX = '#FF00FF';
+const BACKGROUND_RGB = 'RGB(255,0,255)';
 
 const REDRAW_INSTRUCTION =
   'This is not a photo-editing or cutout task — do not try to trace, segment, or reconstruct the ' +
@@ -73,20 +81,37 @@ const REDRAW_INSTRUCTION =
   'pattern, real fabric texture and logo from step 2 onto that clean silhouette with photographic ' +
   'realism: true material texture and sheen (knit, woven cotton, nylon, leather, etc. as ' +
   'appropriate), soft natural photographic shading and folds consistent with real fabric lying ' +
-  'flat, and sharp photographic focus. The result must look like a real, professionally-shot ' +
+  'flat, and sharp photographic focus. Even when the source material is naturally sheer, gauzy, or ' +
+  'translucent (chiffon, tulle, lace, organza) and the photo shows other layers or the background ' +
+  'faintly through it, render every part of the template as fully opaque here — a believable ' +
+  'sheer *look* through shading, highlights and layered folds is fine and encouraged, but no pixel ' +
+  'of the template may actually let the background show or blend through it, and its outer edge ' +
+  'must stay a crisp, fully-opaque line against the background, never fading, feathering, or ' +
+  'softening into it. The result must look like a real, professionally-shot ' +
   'product photo of that item, exactly like a high-end e-commerce listing — never a vector ' +
   'illustration, line drawing, sketch, clip art, or cartoon. Never let anything from the photo — ' +
   'a hand, a phone, a fold, a ' +
   'shadow, the body underneath, the angle it was held at — carve a notch, gap, or hole into the ' +
   'template shape; the template\'s own outline is always a single, solid, unbroken piece, full ' +
-  'stop, regardless of what was hidden or awkward in the photo. The white background must never ' +
+  'stop, regardless of what was hidden or awkward in the photo. The background color must never ' +
   'appear inside that outline either — no gap between a sleeve and the body, no gap between pant ' +
-  'legs, nothing — every part of the template touches or overlaps its neighboring part. Center ' +
-  'the item on a background that is a completely flat, ' +
-  `solid fill of pure white, hex code ${BACKGROUND_HEX}, ${BACKGROUND_RGB}, exactly like a blank ` +
-  'white canvas or a color swatch. Absolutely no gradient, no vignette, no shadow, no light ' +
-  'falloff, no off-white or gray tint anywhere in the background — every single background pixel ' +
-  'must be pure white.';
+  'legs, nothing — every part of the template touches or overlaps its neighboring part, including ' +
+  'a garment that is itself white or very pale: render its highlights and lightest folds as a ' +
+  'real, slightly-shaded off-white fabric tone, never as the flat background color itself, so the ' +
+  'two stay visually distinct even at their palest. Center the item on a background that is a ' +
+  'completely flat, solid fill of a bright, fully-saturated chroma-key magenta — the kind used in ' +
+  `film/photo compositing, not a color that occurs on real fabric — hex code ${BACKGROUND_HEX}, ` +
+  `${BACKGROUND_RGB}, exactly like a solid color swatch. Absolutely no gradient, no vignette, no ` +
+  'shadow, no light falloff, and no blending toward white, gray, or any of the garment\'s own ' +
+  'colors anywhere in the background — every single background pixel must be that exact flat ' +
+  'magenta, with a hard, fully-opaque cutoff where the garment begins: never a soft, fading, ' +
+  'feathered, or semi-transparent transition, even along a naturally sheer or wispy edge (a ' +
+  'chiffon ruffle, tulle, loose threads, fringe) — draw that edge crisp and fully opaque anyway, ' +
+  'exactly on the true silhouette line, the same way a die-cut sticker would be. This is a goal to ' +
+  'aim for, not a reason to refuse the item: even on a pale, voluminous, or structurally complex ' +
+  'garment where a perfectly crisp magenta edge is hard to guarantee, still render your best ' +
+  'silhouette and best attempt at a clean edge — an imperfect edge is always better than not ' +
+  'attempting the item at all.';
 
 const VestroCategories = [
   'Hauts',
@@ -201,10 +226,14 @@ function classificationInstruction(language: Language, precedesImage: boolean): 
     'discernible — false is only for a real, blocking problem, never a cautious fallback when you ' +
     'are just not fully certain of every detail. In particular, none of these are reasons to mark ' +
     'it false: the background is busy; the item is worn on a person; the item is a similar or ' +
-    'near-matching color to its background (e.g. a white or cream item on a white background) — ' +
-    'redraw its silhouette and shading as best you can instead of rejecting it; the item is shown ' +
-    'as a matching pair or set the way it is normally sold or worn (e.g. two shoes, a pair of ' +
-    'gloves, a set of earrings) — that is one listing, not multiple items, so redraw one ' +
+    'near-matching color to its background (e.g. a white or cream item on a white background, or ' +
+    'a photo already shot on white/light like a commercial product photo) — redraw its silhouette ' +
+    'and shading as best you can instead of rejecting it; the item is pale, white, or has a lot of ' +
+    'volume, folds or drape (a full dress, anything structurally complex) that might make a ' +
+    'perfectly crisp edge against the flat magenta backdrop hard to guarantee — do your best ' +
+    'approximate redraw and silhouette anyway, an imperfect edge is never a reason to refuse; the ' +
+    'item is shown as a matching pair or set the way it is normally sold or worn (e.g. two shoes, a ' +
+    'pair of gloves, a set of earrings) — that is one listing, not multiple items, so redraw one ' +
     'representative piece from it, never "multiple_items" for this; the item has a lot of visible ' +
     'structure (straps, buckles, hardware, pockets, a bag shown at an angle with several parts ' +
     'overlapping) — simplify it to a clean, generic version of that item type instead of rejecting ' +

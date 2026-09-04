@@ -8,6 +8,7 @@ export type ClothingItem = {
   category: string;
   color?: string;
   image?: string;
+  imagePath?: string;
   price?: number;
   status: ClothingStatus;
   available: boolean;

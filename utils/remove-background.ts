@@ -41,6 +41,14 @@ export const PHOTO_ISSUE_CODES = [
   // directly in analyzeClothingPhoto() below when the server's own monthly
   // quota gate rejects the call before Gemini is even called.
   'quota_exceeded',
+  // Also never returned by Gemini — set when the call to edit-clothing-photo
+  // itself failed (network error, timeout, auth/premium check, Gemini down,
+  // malformed response) rather than the model looking at the photo and
+  // rejecting it. Kept distinct from 'other' on purpose: telling a user
+  // "this photo won't work, try another" when the real problem is a network
+  // blip or their subscription not being recognized sends them retrying with
+  // different photos forever, none of which can ever succeed.
+  'technical_error',
 ] as const;
 
 export type PhotoIssue = (typeof PHOTO_ISSUE_CODES)[number];
@@ -138,11 +146,32 @@ export function splitDataUri(dataUri: string): { mimeType: string; base64: strin
 //
 // Known limitation: this is plain chroma-keying, not real segmentation, so it
 // cannot tell a near-background pixel apart from a garment of a similar color
-// (e.g. a white t-shirt or sneakers) touching it. No bail-out on how much gets
-// cleared: a visible leftover background is worse than an over-aggressive cut
-// on a light garment, by design.
+// touching it. Two prompt-side fixes (a chroma-key magenta backdrop instead
+// of white, then an explicit "render fully opaque, hard edge" instruction)
+// each targeted a real cause but neither held up on retest: testers still saw
+// holes eaten deep into a sheer chiffon ruffle skirt and, separately, a
+// loosely-knit sweater — both garments whose *own* legitimate texture (a
+// fine weave, yarn-gap shadows) is itself a slowly-varying pattern of light
+// and dark, which is indistinguishable from a background vignette to a rule
+// that only ever asks "is this pixel close to the last one we cleared?". No
+// prompt wording fixes that — it's a property of the algorithm, not of what
+// Gemini draws.
+//
+// EDGE_DISTANCE_FOR_LOOSE_RULE draws the actual line: a real background
+// vignette is, by definition, only ever near the photo's outer frame — a
+// legitimate one never needs to explain a pixel deep inside the image. So
+// pixels within this many hops of the frame may still use the loose local +
+// global check below (handles a soft vignette or antialiasing near the
+// edge); once the flood-fill has walked further inward than that, it's
+// crawling through the interior of the picture — likely the garment's own
+// texture — and must instead match the ORIGINAL sampled background color
+// tightly (STRICT_MAX_DRIFT), not just resemble its immediate neighbor. This
+// caps how far a chain of small local steps can tunnel into a garment,
+// without needing the background to be a special color at all.
 const LOCAL_STEP_TOLERANCE = 16;
 const MAX_DRIFT_FROM_SAMPLE = 46;
+const EDGE_DISTANCE_FOR_LOOSE_RULE = 48;
+const STRICT_MAX_DRIFT = 16;
 
 type Rgb = { r: number; g: number; b: number };
 
@@ -197,43 +226,53 @@ function pixelRgb(rgba: Uint8Array, pixelIndex: number): Rgb {
 function snapBorderToTransparent(rgba: Uint8Array, width: number, height: number): number {
   const background = sampleBackgroundColor(rgba, width, height);
   const visited = new Uint8Array(width * height);
-  const stack: number[] = [];
+  // A real queue (index cursor, not shift()), not the previous stack: hop
+  // counts below are only a meaningful "distance from the frame" if pixels
+  // are visited in non-decreasing distance order, which a stack-based DFS
+  // does not guarantee (it can snake far along one direction before ever
+  // trying the pixel right next to the border) — BFS does.
+  const queue: { pixelIndex: number; hops: number }[] = [];
+  let head = 0;
   let cleared = 0;
 
-  function maybePush(x: number, y: number, ref: Rgb) {
+  function maybePush(x: number, y: number, ref: Rgb, hops: number) {
     if (x < 0 || y < 0 || x >= width || y >= height) return;
     const pixelIndex = y * width + x;
     if (visited[pixelIndex]) return;
     visited[pixelIndex] = 1;
-    if (
-      withinTolerance(rgba, pixelIndex, ref, LOCAL_STEP_TOLERANCE) &&
-      withinTolerance(rgba, pixelIndex, background, MAX_DRIFT_FROM_SAMPLE)
-    ) {
-      stack.push(pixelIndex);
+
+    const passesLocalStep = withinTolerance(rgba, pixelIndex, ref, LOCAL_STEP_TOLERANCE);
+    const eligible =
+      hops <= EDGE_DISTANCE_FOR_LOOSE_RULE
+        ? passesLocalStep && withinTolerance(rgba, pixelIndex, background, MAX_DRIFT_FROM_SAMPLE)
+        : passesLocalStep && withinTolerance(rgba, pixelIndex, background, STRICT_MAX_DRIFT);
+
+    if (eligible) {
+      queue.push({ pixelIndex, hops });
     }
   }
 
   for (let x = 0; x < width; x++) {
-    maybePush(x, 0, background);
-    maybePush(x, height - 1, background);
+    maybePush(x, 0, background, 0);
+    maybePush(x, height - 1, background, 0);
   }
   for (let y = 0; y < height; y++) {
-    maybePush(0, y, background);
-    maybePush(width - 1, y, background);
+    maybePush(0, y, background, 0);
+    maybePush(width - 1, y, background, 0);
   }
 
-  while (stack.length > 0) {
-    const pixelIndex = stack.pop()!;
+  while (head < queue.length) {
+    const { pixelIndex, hops } = queue[head++];
     const ref = pixelRgb(rgba, pixelIndex);
     rgba[pixelIndex * 4 + 3] = 0;
     cleared++;
 
     const x = pixelIndex % width;
     const y = (pixelIndex - x) / width;
-    maybePush(x - 1, y, ref);
-    maybePush(x + 1, y, ref);
-    maybePush(x, y - 1, ref);
-    maybePush(x, y + 1, ref);
+    maybePush(x - 1, y, ref, hops + 1);
+    maybePush(x + 1, y, ref, hops + 1);
+    maybePush(x, y - 1, ref, hops + 1);
+    maybePush(x, y + 1, ref, hops + 1);
   }
 
   return cleared;
@@ -501,13 +540,16 @@ export async function analyzeClothingPhoto(
   // quota reached) must not silently become a usable item with an unprocessed
   // photo and a placeholder name — route it through the same "rejected" path
   // as a model-flagged bad photo, so the caller shows a real error instead of
-  // a broken result. The quota case gets its own issue code so the alert
-  // shown to the user says why, instead of the generic "other" message.
+  // a broken result. But it must NOT reuse 'other' (a real, model-decided
+  // "this photo won't work" verdict) — a call failure means Gemini never even
+  // looked at the photo, so blaming the photo would send the user retrying
+  // with different photos forever. Quota keeps its own code so the alert
+  // explains that specifically; every other failure gets 'technical_error'.
   if (outcome.status !== 'success') {
     return {
       image: outcome.image,
       usable: false,
-      issue: outcome.code === 'quota_exceeded' ? 'quota_exceeded' : 'other',
+      issue: outcome.code === 'quota_exceeded' ? 'quota_exceeded' : 'technical_error',
     };
   }
 

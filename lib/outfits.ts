@@ -1,3 +1,4 @@
+import { invalidateCache, readThroughCache } from '@/lib/offline-cache';
 import { supabase } from '@/lib/supabase';
 import type { Outfit } from '@/types/clothing';
 
@@ -28,13 +29,15 @@ async function requireUserId(): Promise<string> {
 }
 
 export async function fetchOutfits(): Promise<Outfit[]> {
-  const { data, error } = await supabase
-    .from('outfits')
-    .select('*')
-    .order('created_at', { ascending: false });
+  return readThroughCache('outfits', async () => {
+    const { data, error } = await supabase
+      .from('outfits')
+      .select('*')
+      .order('created_at', { ascending: false });
 
-  if (error) throw new Error(error.message);
-  return (data ?? []).map(rowToOutfit);
+    if (error) throw new Error(error.message);
+    return (data ?? []).map(rowToOutfit);
+  });
 }
 
 export async function insertOutfit(outfit: {
@@ -58,6 +61,7 @@ export async function insertOutfit(outfit: {
     .single();
 
   if (error) throw new Error(error.message);
+  await invalidateCache('outfits');
   return rowToOutfit(data);
 }
 
@@ -73,9 +77,11 @@ export async function updateOutfit(
 
   const { error } = await supabase.from('outfits').update(update).eq('id', id);
   if (error) throw new Error(error.message);
+  await invalidateCache('outfits');
 }
 
 export async function deleteOutfit(id: number): Promise<void> {
   const { error } = await supabase.from('outfits').delete().eq('id', id);
   if (error) throw new Error(error.message);
+  await invalidateCache('outfits');
 }

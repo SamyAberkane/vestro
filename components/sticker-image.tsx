@@ -1,7 +1,13 @@
-import { Image, StyleSheet, View, type ImageStyle, type StyleProp, type ViewStyle } from 'react-native';
+import { Image } from 'expo-image';
+import { StyleSheet, View, type ImageStyle, type StyleProp, type ViewStyle } from 'react-native';
 
 type StickerImageProps = {
   uri: string;
+  // The storage path behind `uri`, if known — `uri` is a signed URL that
+  // changes on every fetch, so caching against it would never hit; this
+  // stays stable across fetches and is what actually lets the disk cache
+  // reuse a photo already downloaded once, offline included.
+  cacheKey?: string;
   style?: StyleProp<ImageStyle>;
   containerStyle?: StyleProp<ViewStyle>;
   resizeMode?: 'contain' | 'cover';
@@ -14,10 +20,14 @@ type StickerImageProps = {
 // a fixed white card — always, regardless of the app's own light/dark theme
 // — keeps those leftover gaps invisible (white-on-white) instead of showing
 // through as a dark patch whenever the surface behind it is dark.
-export function StickerImage({ uri, style, containerStyle, resizeMode = 'contain' }: StickerImageProps) {
+export function StickerImage({ uri, cacheKey, style, containerStyle, resizeMode = 'contain' }: StickerImageProps) {
   return (
     <View style={[containerStyle, styles.backing]}>
-      <Image source={{ uri }} style={[styles.image, style]} resizeMode={resizeMode} />
+      <Image
+        source={{ uri, cacheKey }}
+        style={[styles.image, style]}
+        contentFit={resizeMode}
+      />
     </View>
   );
 }

@@ -19,6 +19,7 @@ export type ClothingPreviewItem = {
   id: number;
   name: string;
   image?: string;
+  imagePath?: string;
   color?: string;
 };
 
@@ -87,7 +88,7 @@ export function ClothingPreviewModal({ item, onClose, onEdit }: ClothingPreviewM
           <GestureDetector gesture={dismissGesture}>
             <Animated.View style={[styles.imageWrap, dragStyle]}>
               {item.image ? (
-                <StickerImage uri={item.image} containerStyle={styles.imageCard} />
+                <StickerImage uri={item.image} cacheKey={item.imagePath} containerStyle={styles.imageCard} />
               ) : (
                 <View style={[styles.fallback, { backgroundColor: item.color ?? VestroColors.surface }]} />
               )}

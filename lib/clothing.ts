@@ -1,3 +1,4 @@
+import { invalidateCache, readThroughCache } from '@/lib/offline-cache';
 import { supabase } from '@/lib/supabase';
 import type { ClothingItem, ClothingStatus } from '@/types/clothing';
 import { resizeStoredImageIfNeeded, splitDataUri, uriToDataUri } from '@/utils/remove-background';
@@ -27,6 +28,7 @@ async function rowsToItems(rows: ClothingRow[]): Promise<ClothingItem[]> {
     category: row.category,
     color: row.color ?? undefined,
     image: row.image_path ? urls[row.image_path] : undefined,
+    imagePath: row.image_path ?? undefined,
     price: row.price ?? undefined,
     status: row.status,
     available: row.available,
@@ -63,13 +65,15 @@ async function requireUserId(): Promise<string> {
 }
 
 export async function fetchClothingItems(): Promise<ClothingItem[]> {
-  const { data, error } = await supabase
-    .from('clothing_items')
-    .select('*')
-    .order('created_at', { ascending: false });
+  return readThroughCache('clothing-items', async () => {
+    const { data, error } = await supabase
+      .from('clothing_items')
+      .select('*')
+      .order('created_at', { ascending: false });
 
-  if (error) throw new Error(error.message);
-  return rowsToItems(data ?? []);
+    if (error) throw new Error(error.message);
+    return rowsToItems(data ?? []);
+  });
 }
 
 // Used where only a handful of specific items are needed (e.g. the home
@@ -79,9 +83,12 @@ export async function fetchClothingItems(): Promise<ClothingItem[]> {
 export async function fetchClothingItemsByIds(ids: number[]): Promise<ClothingItem[]> {
   if (ids.length === 0) return [];
 
-  const { data, error } = await supabase.from('clothing_items').select('*').in('id', ids);
-  if (error) throw new Error(error.message);
-  return rowsToItems(data ?? []);
+  const cacheKey = `clothing-items-by-ids:${[...ids].sort((a, b) => a - b).join(',')}`;
+  return readThroughCache(cacheKey, async () => {
+    const { data, error } = await supabase.from('clothing_items').select('*').in('id', ids);
+    if (error) throw new Error(error.message);
+    return rowsToItems(data ?? []);
+  });
 }
 
 export type NewClothingItem = {
@@ -112,6 +119,7 @@ export async function insertClothingItems(newItems: NewClothingItem[]): Promise<
 
   const { data, error } = await supabase.from('clothing_items').insert(rows).select();
   if (error) throw new Error(error.message);
+  await invalidateCache('clothing-items');
   notifyClothingItemsChanged();
   return rowsToItems(data ?? []);
 }
@@ -144,11 +152,13 @@ export async function updateClothingItem(id: number, patch: ClothingItemPatch): 
 
   const { error } = await supabase.from('clothing_items').update(update).eq('id', id);
   if (error) throw new Error(error.message);
+  await invalidateCache('clothing-items');
 }
 
 export async function deleteClothingItem(id: number): Promise<void> {
   const { error } = await supabase.from('clothing_items').delete().eq('id', id);
   if (error) throw new Error(error.message);
+  await invalidateCache('clothing-items');
 }
 
 export type OptimizeImagesResult = { optimized: number; skipped: number; failed: number };
@@ -221,7 +231,10 @@ export async function optimizeStoredImages(
     `[optimizeStoredImages] terminé: ${result.optimized} redimensionnées, ${result.skipped} ignorées, ${result.failed} échecs`
   );
 
-  if (result.optimized > 0) notifyClothingItemsChanged();
+  if (result.optimized > 0) {
+    await invalidateCache('clothing-items');
+    notifyClothingItemsChanged();
+  }
   return result;
 }
 
