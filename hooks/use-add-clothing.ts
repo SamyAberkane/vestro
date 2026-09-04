@@ -116,7 +116,7 @@ export function useAddClothing() {
     }
 
     const newItems = [];
-    const rejected: { index: number; issue: PhotoIssue }[] = [];
+    const rejected: { index: number; issue: PhotoIssue; errorCode?: string }[] = [];
 
     for (let i = 0; i < assets.length; i++) {
       setBatchStep({ index: i + 1, count: assets.length });
@@ -125,7 +125,7 @@ export function useAddClothing() {
       const analysis = await analyzeClothingPhoto(assets[i].uri, language);
 
       if (analysis.usable === false) {
-        rejected.push({ index: i + 1, issue: analysis.issue ?? 'other' });
+        rejected.push({ index: i + 1, issue: analysis.issue ?? 'other', errorCode: analysis.errorCode });
         continue;
       }
 
@@ -142,11 +142,14 @@ export function useAddClothing() {
     setProcessingImageUri(undefined);
 
     if (rejected.length > 0) {
-      const lines = rejected.map((r) =>
-        assets.length > 1
-          ? `${t('processing.stepLabel', { index: r.index, count: assets.length })} — ${t(`photoIssue.${r.issue}`)}`
-          : t(`photoIssue.${r.issue}`)
-      );
+      const lines = rejected.map((r) => {
+        const text = r.errorCode
+          ? t('photoIssue.technical_error', { code: r.errorCode })
+          : t(`photoIssue.${r.issue}`);
+        return assets.length > 1
+          ? `${t('processing.stepLabel', { index: r.index, count: assets.length })} — ${text}`
+          : text;
+      });
       alert(t('photoIssue.alertTitle'), lines.join('\n'));
     }
 

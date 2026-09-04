@@ -426,10 +426,27 @@ function DraggableItem({
         .maxPointers(1)
         .onStart(() => {
           'worklet';
+          // Only bump z-order for a drag that's actually going to move this
+          // item (see the `selected` guard in onChange below) — an unselected
+          // item's drag attempt must have no effect at all, not even a
+          // stacking-order change.
+          if (!selected) return;
           runOnJS(handleTouch)();
         })
         .onChange((event) => {
           'worklet';
+          // Only the selected item may actually move. Gesture.Pan() stays
+          // enabled (not gated by `selected`) so touch arbitration against
+          // the board-level tap gesture is unaffected by selection — an
+          // earlier version disabled the whole gesture for an unselected
+          // item instead, which stopped it from ever releasing the touch to
+          // the ancestor tap gesture at all, breaking tap-to-select (and, in
+          // turn, every drag, since nothing could ever become selected).
+          // Gating only the visual effect here keeps that arbitration intact
+          // while still guaranteeing an unselected item is never the one
+          // that moves.
+          if (!selected) return;
+
           // Stops the drag dead at the allowed-overflow edge instead of
           // letting it past and clamping afterwards, matching
           // clampToCanvas's own bounds exactly (see its comment and
@@ -451,9 +468,11 @@ function DraggableItem({
           translateY.value = Math.min(Math.max(translateY.value + event.changeY, minY), maxY);
         })
         .onEnd(() => {
+          'worklet';
+          if (!selected) return;
           runOnJS(commit)();
         }),
-    [disabled, displayScale, itemSize, currentScale, translateX, translateY, commit, handleTouch]
+    [disabled, selected, displayScale, itemSize, currentScale, translateX, translateY, commit, handleTouch]
   );
 
   const gesture = pan;
@@ -469,6 +488,18 @@ function DraggableItem({
   return (
     <GestureDetector gesture={gesture}>
       <Animated.View
+        // An unselected item must never be the one a touch actually lands
+        // on, even when it's visually stacked in front of the selected one
+        // — native hit-testing otherwise hands the touch to whichever view
+        // is on top, regardless of app-level selection, which is exactly
+        // what made the item *underneath* an overlap unmovable even while
+        // selected (its own gesture never received the touch at all).
+        // pointerEvents="none" makes an unselected item fully transparent to
+        // touch — the touch passes straight through it to whatever is
+        // beneath (the selected item, if it's there, or further down to the
+        // board's own tap gesture for selection) instead of being captured
+        // by this view first.
+        pointerEvents={selected ? 'auto' : 'none'}
         style={[styles.item, { width: itemSize, height: itemSize, zIndex }, animatedStyle]}
       >
         {item.image ? (

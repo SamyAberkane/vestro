@@ -323,7 +323,15 @@ async function callGemini(mimeType: string, base64: string, prompt: string, incl
 
       if (!response.ok) {
         const detail = json?.error?.message ?? JSON.stringify(json).slice(0, 300);
-        return { status: 'error' as const, message: `HTTP ${response.status} — ${detail}` };
+        // `code` is the Gemini HTTP status, surfaced to the end user as a
+        // short reportable code (e.g. "429") instead of `detail`, which can
+        // contain internal/billing detail (API quota, project billing state)
+        // that shouldn't be shown to a tester — see PhotoIssue.technical_error.
+        return {
+          status: 'error' as const,
+          message: `HTTP ${response.status} — ${detail}`,
+          code: String(response.status),
+        };
       }
 
       const parts = json?.candidates?.[0]?.content?.parts ?? [];
@@ -335,11 +343,12 @@ async function callGemini(mimeType: string, base64: string, prompt: string, incl
         return {
           status: 'error' as const,
           message: `Réponse Gemini sans image${textPart ? ` — texte reçu: "${textPart.slice(0, 200)}"` : ''}`,
+          code: 'NO_IMAGE',
         };
       }
 
       if (!includeImage && !textPart) {
-        return { status: 'error' as const, message: 'Réponse Gemini sans texte' };
+        return { status: 'error' as const, message: 'Réponse Gemini sans texte', code: 'NO_TEXT' };
       }
 
       return {
@@ -352,13 +361,14 @@ async function callGemini(mimeType: string, base64: string, prompt: string, incl
       };
     } catch (error) {
       const message = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
-      return { status: 'error' as const, message };
+      const code = error instanceof Error && error.name === 'AbortError' ? 'TIMEOUT' : 'NETWORK';
+      return { status: 'error' as const, message, code };
     } finally {
       clearTimeout(timeout);
     }
   }
 
-  return { status: 'error' as const, message: 'Échec après nouvelle tentative sur limite de débit' };
+  return { status: 'error' as const, message: 'Échec après nouvelle tentative sur limite de débit', code: '429' };
 }
 
 Deno.serve(async (req) => {
@@ -367,16 +377,16 @@ Deno.serve(async (req) => {
   }
 
   if (!GEMINI_API_KEY) {
-    return new Response(JSON.stringify({ status: 'error', message: 'GEMINI_API_KEY non configuré côté serveur' }), {
-      status: 500,
-      headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
-    });
+    return new Response(
+      JSON.stringify({ status: 'error', message: 'GEMINI_API_KEY non configuré côté serveur', code: 'CONFIG' }),
+      { status: 500, headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' } }
+    );
   }
 
   try {
     const authHeader = req.headers.get('Authorization');
     if (!authHeader) {
-      return new Response(JSON.stringify({ status: 'error', message: 'Non authentifié' }), {
+      return new Response(JSON.stringify({ status: 'error', message: 'Non authentifié', code: 'AUTH' }), {
         status: 401,
         headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
       });
@@ -390,7 +400,7 @@ Deno.serve(async (req) => {
       error: userError,
     } = await callerClient.auth.getUser();
     if (userError || !user) {
-      return new Response(JSON.stringify({ status: 'error', message: 'Non authentifié' }), {
+      return new Response(JSON.stringify({ status: 'error', message: 'Non authentifié', code: 'AUTH' }), {
         status: 401,
         headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
       });
@@ -398,16 +408,16 @@ Deno.serve(async (req) => {
 
     const { data: isPremium, error: premiumError } = await callerClient.rpc('has_active_premium');
     if (premiumError || !isPremium) {
-      return new Response(JSON.stringify({ status: 'error', message: 'Abonnement requis' }), {
-        status: 403,
-        headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
-      });
+      return new Response(
+        JSON.stringify({ status: 'error', message: 'Abonnement requis', code: 'SUBSCRIPTION' }),
+        { status: 403, headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' } }
+      );
     }
 
     const body: RequestBody = await req.json();
 
     if (!body.mimeType || !body.base64) {
-      return new Response(JSON.stringify({ status: 'error', message: 'Requête invalide' }), {
+      return new Response(JSON.stringify({ status: 'error', message: 'Requête invalide', code: 'BAD_REQUEST' }), {
         status: 400,
         headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
       });
@@ -458,7 +468,7 @@ Deno.serve(async (req) => {
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    return new Response(JSON.stringify({ status: 'error', message }), {
+    return new Response(JSON.stringify({ status: 'error', message, code: 'SERVER' }), {
       status: 400,
       headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
     });

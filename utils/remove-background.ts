@@ -369,7 +369,12 @@ type GeminiStickerOutcome = {
   text?: string;
   status: 'success' | 'error';
   message: string;
-  /** Set only for the server's monthly quota rejection — see analyzeClothingPhoto. */
+  /**
+   * A short, machine-readable reason for a non-success outcome — either the
+   * server's own 'quota_exceeded' code, or a code from edit-clothing-photo's
+   * response body (an HTTP status like "429", or a label like "NETWORK",
+   * "TIMEOUT", "AUTH", "SUBSCRIPTION"...). See analyzeClothingPhoto.
+   */
   code?: string;
 };
 
@@ -512,6 +517,16 @@ export type ClothingAnalysis = {
   /** false only when the model flagged the source photo as unusable — see `issue`. */
   usable?: boolean;
   issue?: PhotoIssue;
+  /**
+   * Set only for issue === 'technical_error' — a short, reportable code
+   * (an HTTP status like "429", or a label like "NETWORK"/"TIMEOUT") shown
+   * to the user so they can tell us exactly what happened. Deliberately NOT
+   * the raw internal error text (which can include detail that shouldn't be
+   * shown to a tester, e.g. a billing/quota message) — just enough for
+   * someone to say "I got error 429" and for us to know instantly what that
+   * means, without exposing why.
+   */
+  errorCode?: string;
 };
 
 /**
@@ -546,10 +561,12 @@ export async function analyzeClothingPhoto(
   // with different photos forever. Quota keeps its own code so the alert
   // explains that specifically; every other failure gets 'technical_error'.
   if (outcome.status !== 'success') {
+    const isQuota = outcome.code === 'quota_exceeded';
     return {
       image: outcome.image,
       usable: false,
-      issue: outcome.code === 'quota_exceeded' ? 'quota_exceeded' : 'technical_error',
+      issue: isQuota ? 'quota_exceeded' : 'technical_error',
+      errorCode: isQuota ? undefined : outcome.code ?? 'UNKNOWN',
     };
   }
 
