@@ -34,6 +34,15 @@ const MONTHLY_PHOTO_LIMIT = 50;
 const TIMEOUT_MS = 45000;
 const MAX_RETRIES_ON_RATE_LIMIT = 1;
 const DEFAULT_RETRY_DELAY_MS = 15000;
+// A redraw call asks for both TEXT and IMAGE back — when Gemini answers with
+// text only, that used to be treated as a final, non-retryable failure
+// (NO_IMAGE), but there's no way from here to tell whether that means "this
+// input is genuinely refused" (a safety block that will always recur) or
+// "the model happened to produce a text-only turn this one time" (which a
+// plain retry recovers, same idea as the 429 retry above). Retrying once
+// costs nothing extra unless it was actually needed, and turns any purely
+// stochastic misses into a success instead of a false rejection.
+const MAX_RETRIES_ON_NO_IMAGE = 1;
 
 const CORS_HEADERS = {
   'Access-Control-Allow-Origin': '*',
@@ -290,7 +299,9 @@ function parseRetryDelayMs(message: string): number {
 }
 
 async function callGemini(mimeType: string, base64: string, prompt: string, includeImage: boolean) {
-  for (let attempt = 0; attempt <= MAX_RETRIES_ON_RATE_LIMIT; attempt++) {
+  const maxAttempts = Math.max(MAX_RETRIES_ON_RATE_LIMIT, MAX_RETRIES_ON_NO_IMAGE);
+
+  for (let attempt = 0; attempt <= maxAttempts; attempt++) {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), TIMEOUT_MS);
 
@@ -334,15 +345,37 @@ async function callGemini(mimeType: string, base64: string, prompt: string, incl
         };
       }
 
-      const parts = json?.candidates?.[0]?.content?.parts ?? [];
+      const candidate = json?.candidates?.[0];
+      const parts = candidate?.content?.parts ?? [];
       const imagePart = parts.find((part: any) => part.inlineData || part.inline_data);
       const inline = imagePart?.inlineData ?? imagePart?.inline_data;
       const textPart = parts.find((part: any) => typeof part.text === 'string')?.text;
 
       if (includeImage && !inline?.data) {
+        // Distinguishes a genuine content/safety refusal (which will recur
+        // identically on retry — no point spending one) from Gemini simply
+        // producing a text-only turn this one time (which a retry usually
+        // recovers, same logic as the 429 branch above). promptFeedback is
+        // set when the INPUT itself got blocked before generation ever ran;
+        // candidate.finishReason (e.g. "SAFETY", "RECITATION") is set when
+        // generation started but was cut short — either one, when present,
+        // means retrying is pointless and only wastes a call.
+        const blockReason = json?.promptFeedback?.blockReason;
+        const finishReason = candidate?.finishReason;
+        const isRefusal = Boolean(blockReason) || (finishReason && finishReason !== 'STOP');
+        const diagnostic = [blockReason && `blockReason=${blockReason}`, finishReason && `finishReason=${finishReason}`]
+          .filter(Boolean)
+          .join(', ');
+
+        if (!isRefusal && attempt < MAX_RETRIES_ON_NO_IMAGE) {
+          continue;
+        }
+
         return {
           status: 'error' as const,
-          message: `Réponse Gemini sans image${textPart ? ` — texte reçu: "${textPart.slice(0, 200)}"` : ''}`,
+          message:
+            `Réponse Gemini sans image${diagnostic ? ` (${diagnostic})` : ''}` +
+            `${textPart ? ` — texte reçu: "${textPart.slice(0, 200)}"` : ''}`,
           code: 'NO_IMAGE',
         };
       }
@@ -368,7 +401,7 @@ async function callGemini(mimeType: string, base64: string, prompt: string, incl
     }
   }
 
-  return { status: 'error' as const, message: 'Échec après nouvelle tentative sur limite de débit', code: '429' };
+  return { status: 'error' as const, message: 'Échec après nouvelles tentatives', code: 'RETRY_EXHAUSTED' };
 }
 
 Deno.serve(async (req) => {

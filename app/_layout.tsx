@@ -42,7 +42,15 @@ const IMAGES_OPTIMIZED_KEY = 'vestro-images-optimized-v2';
 // an enclosed shape — a bag handle, glasses lenses — that fill could never
 // reach. This re-keys every stored photo with the current algorithm; no new
 // Gemini call, so no quota cost either way.
-const MAGENTA_RECUT_KEY = 'vestro-magenta-recut-v1';
+//
+// Bumped to v2 on 2026-09-07: keyOutBackground itself changed (added a
+// bounded edge-erosion pass to clear the anti-aliased magenta fringe the
+// flat per-pixel test alone left behind — see utils/remove-background.ts).
+// The v1 flag had already been set on some devices by the OLD, fringe-prone
+// version of that function before this fix landed, which would otherwise
+// permanently skip re-running this cleanup with the corrected algorithm —
+// bumping the key forces every device to redo this pass once more.
+const MAGENTA_RECUT_KEY = 'vestro-magenta-recut-v2';
 
 export const unstable_settings = {
   anchor: '(tabs)',

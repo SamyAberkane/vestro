@@ -196,40 +196,6 @@ const EDGE_ERODE_MAX_DRIFT = 130;
 
 type Rgb = { r: number; g: number; b: number };
 
-function median(values: number[]): number {
-  const sorted = [...values].sort((a, b) => a - b);
-  return sorted[Math.floor(sorted.length / 2)];
-}
-
-// The border is overwhelmingly background pixels (the redraw prompt centers
-// the item away from the edges), so the median border color is a robust
-// stand-in for "the background color Gemini actually rendered" — a median,
-// unlike a mean, isn't dragged off by the minority of border pixels that do
-// belong to the item.
-function sampleBackgroundColor(rgba: Uint8Array, width: number, height: number): Rgb {
-  const reds: number[] = [];
-  const greens: number[] = [];
-  const blues: number[] = [];
-
-  function sample(x: number, y: number) {
-    const offset = (y * width + x) * 4;
-    reds.push(rgba[offset]);
-    greens.push(rgba[offset + 1]);
-    blues.push(rgba[offset + 2]);
-  }
-
-  for (let x = 0; x < width; x++) {
-    sample(x, 0);
-    sample(x, height - 1);
-  }
-  for (let y = 0; y < height; y++) {
-    sample(0, y);
-    sample(width - 1, y);
-  }
-
-  return { r: median(reds), g: median(greens), b: median(blues) };
-}
-
 function withinTolerance(rgba: Uint8Array, pixelIndex: number, ref: Rgb, tolerance: number): boolean {
   const offset = pixelIndex * 4;
   return (
@@ -304,16 +270,23 @@ function keyOutBackgroundCore(rgba: Uint8Array, width: number, height: number, b
   return cleared;
 }
 
+// Used to compare against the known, fixed magenta value (CANONICAL_BACKGROUND
+// below) instead of sampling the image's own border. A border sample used to
+// be the reference here, on the theory that the border is "overwhelmingly
+// background pixels" — but a large or off-center item (a dress, a bag shot
+// close-up) can have the item itself running along a meaningful stretch of
+// the border, skewing the sampled median away from true magenta and leaving
+// large swaths of real background uncleared. There's no such risk comparing
+// against the fixed value directly: Gemini was explicitly told to render
+// this exact hex, and the generous tolerance already accounts for its normal
+// per-pixel rendering drift.
 function keyOutBackground(rgba: Uint8Array, width: number, height: number): number {
-  const background = sampleBackgroundColor(rgba, width, height);
-  return keyOutBackgroundCore(rgba, width, height, background);
+  return keyOutBackgroundCore(rgba, width, height, CANONICAL_BACKGROUND);
 }
 
-// The exact magenta Gemini is asked to draw (see BACKGROUND_HEX
-// server-side) — used as a fixed fallback reference for recutStoredSticker
-// below, where sampling the image's own border (as keyOutBackground does)
-// isn't an option: a sticker that already went through one cutout pass has
-// a mostly-transparent border, not a magenta one.
+// The exact magenta Gemini is asked to draw (see BACKGROUND_HEX server-side)
+// — the fixed reference both keyOutBackground and recutStoredSticker below
+// compare against, rather than sampling the image's own border/edge.
 const CANONICAL_BACKGROUND: Rgb = { r: 255, g: 0, b: 255 };
 
 // A sticker cut by the old border-seeded flood fill (before keyOutBackground
