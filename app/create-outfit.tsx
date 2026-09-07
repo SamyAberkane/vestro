@@ -1,6 +1,7 @@
 import { router, useLocalSearchParams } from 'expo-router';
 import { useEffect, useMemo, useState } from 'react';
 import {
+  Keyboard,
   LayoutChangeEvent,
   ScrollView,
   StyleSheet,
@@ -10,6 +11,7 @@ import {
   useWindowDimensions,
   View,
 } from 'react-native';
+import { GestureHandlerRootView } from 'react-native-gesture-handler';
 
 import { ConfirmModal } from '@/components/confirm-modal';
 import { CANVAS_REFERENCE_SIZE, CanvasLayout, OutfitCanvas } from '@/components/outfit-canvas';
@@ -203,6 +205,16 @@ export default function CreateOutfitScreen() {
     activeLookItemIds.every((itemId) => currentItemIds.includes(itemId));
 
   async function saveOutfit() {
+    // This screen is a native modal presentation (see app/_layout.tsx) —
+    // dismissing it via router.back() below while the name field's keyboard
+    // is still up races the keyboard's own dismiss animation against the
+    // modal's, which can leave the JS/UI thread handshake stuck (the whole
+    // app becomes unresponsive, needing a force-quit — same underlying class
+    // of bug as the AlertHost/ConfirmModal race documented in those files).
+    // Dismissing here, before the async save even starts, gives the keyboard
+    // the entire network round-trip to close first instead of racing it.
+    Keyboard.dismiss();
+
     const { itemIds, layout: savedLayout } = selectedLookPayload();
 
     if (!name.trim()) {
@@ -275,6 +287,8 @@ export default function CreateOutfitScreen() {
   async function confirmDelete() {
     if (!id) return;
 
+    // Same reason as saveOutfit's Keyboard.dismiss() above.
+    Keyboard.dismiss();
     setIsDeleting(true);
     try {
       await deleteOutfit(Number(id));
@@ -287,10 +301,28 @@ export default function CreateOutfitScreen() {
   }
 
   return (
-    <View style={styles.screen}>
+    // This screen is presented as a native modal (see the "modal"
+    // presentation on its Stack.Screen in app/_layout.tsx), which renders
+    // into a separate native view hierarchy from the one the app's single
+    // root GestureHandlerRootView (also in app/_layout.tsx) wraps. The
+    // OutfitCanvas board below has real drag/pinch gestures — without its
+    // own GestureHandlerRootView here, those gestures aren't correctly
+    // attached to this modal's hierarchy, and dismissing the screen after
+    // using one can leave gesture-handler's native state corrupted for the
+    // whole app (not just this screen), which is what froze the entire app
+    // — including the tab bar — after editing an outfit's board from a
+    // recent-outfits shortcut and saving. Every gesture-bearing modal screen
+    // needs this same wrapper; see react-native-gesture-handler's own docs
+    // on Modal usage.
+    <GestureHandlerRootView style={styles.screen}>
       <ScrollView contentContainerStyle={styles.content}>
         <View style={styles.header}>
-          <TouchableOpacity onPress={() => router.back()}>
+          <TouchableOpacity
+            onPress={() => {
+              Keyboard.dismiss();
+              router.back();
+            }}
+          >
             <Text style={styles.cancel}>{t('common.cancel')}</Text>
           </TouchableOpacity>
 
@@ -455,7 +487,7 @@ export default function CreateOutfitScreen() {
         onConfirm={clearBoard}
         onCancel={() => setConfirmClearVisible(false)}
       />
-    </View>
+    </GestureHandlerRootView>
   );
 }
 
