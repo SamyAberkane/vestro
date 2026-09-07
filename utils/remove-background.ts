@@ -36,7 +36,15 @@ const OUTPUT_COMPRESS = 0.85;
 // any tab. supabase-js's own `timeout` option aborts the underlying fetch
 // after this many ms, turning a silent hang into a real, catchable
 // FunctionsFetchError instead.
-const EDGE_FUNCTION_TIMEOUT_MS = 45000;
+//
+// The non-classifyOnly call now runs the redraw and the classification as
+// two separate, sequential Gemini calls server-side (see
+// edit-clothing-photo/index.ts) instead of one combined call — more
+// reliable (see that file's comment on why the combined call kept dropping
+// the image), but the happy path can now take close to twice as long. This
+// was 45s; raised so a normal two-call round trip doesn't get cut off right
+// as it was about to succeed.
+const EDGE_FUNCTION_TIMEOUT_MS = 75000;
 
 // Reasons a source photo can't produce a clean isolated sticker — surfaced to
 // the user (via i18n `photoIssue.<code>`) so a rejected photo comes with a

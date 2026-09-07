@@ -196,13 +196,10 @@ const METADATA_NAME_EXAMPLE: Record<Language, string> = {
   it: '"Camicia bianca", "Jeans dritti blu"',
 };
 
-function classificationInstruction(language: Language, precedesImage: boolean): string {
+function classificationInstruction(language: Language): string {
   return (
-    (precedesImage
-      ? 'Before the image, output exactly one line of raw JSON — no markdown code fences, no ' +
-        'commentary before or after — '
-      : 'Output exactly one line of raw JSON — no markdown code fences, no commentary before or ' +
-        'after — ') +
+    'Output exactly one line of raw JSON — no markdown code fences, no commentary before or ' +
+    'after — ' +
     'describing the item, in this exact shape and ' +
     'exact field order: {"category": string, "color": string, "name": string, "usable": boolean, ' +
     '"issue": string | null}. Decide the fields in that same order — category first, then color, ' +
@@ -256,10 +253,6 @@ function classificationInstruction(language: Language, precedesImage: boolean): 
   );
 }
 
-function buildPrompt(language: Language): string {
-  return `${REDRAW_INSTRUCTION} ${classificationInstruction(language, true)}`;
-}
-
 // Used to retry just the JSON classification, without asking Gemini to redraw
 // the item again — the redraw is the slow, expensive part of the call, and
 // when the first pass already produced a usable image but dropped the name
@@ -271,7 +264,7 @@ function buildClassifyOnlyPrompt(language: Language): string {
     'You are looking at a clothing item or accessory in a photo, the same kind of source photo ' +
     'used for the Vestro app\'s catalog — it may be worn on a person, wrinkled, folded, cropped, ' +
     'partially hidden, or seen at an odd angle; ignore all of that noise and focus only on ' +
-    "identifying the item itself. " + classificationInstruction(language, false)
+    "identifying the item itself. " + classificationInstruction(language)
   );
 }
 
@@ -298,7 +291,23 @@ function parseRetryDelayMs(message: string): number {
   return match ? Math.ceil(parseFloat(match[1]) * 1000) : DEFAULT_RETRY_DELAY_MS;
 }
 
-async function callGemini(mimeType: string, base64: string, prompt: string, includeImage: boolean) {
+// `modalities` is explicit and single-purpose per call now — this function
+// used to be asked for TEXT+IMAGE together in one call (image redraw plus
+// its JSON classification, interleaved), which is what caused most of the
+// NO_IMAGE failures reported: Gemini would satisfy the "output JSON" half of
+// the prompt, treat that as a complete turn (finishReason "STOP", no safety
+// block, just... stopping), and never get to the image at all. Every caller
+// now asks for exactly one modality — an image-only redraw call, or a
+// text-only classification call — removing the model's opportunity to
+// consider a text-only response "done" when an image was actually required.
+async function callGemini(
+  mimeType: string,
+  base64: string,
+  prompt: string,
+  modalities: ('TEXT' | 'IMAGE')[]
+) {
+  const wantsImage = modalities.includes('IMAGE');
+  const wantsText = modalities.includes('TEXT');
   const maxAttempts = Math.max(MAX_RETRIES_ON_RATE_LIMIT, MAX_RETRIES_ON_NO_IMAGE);
 
   for (let attempt = 0; attempt <= maxAttempts; attempt++) {
@@ -312,7 +321,7 @@ async function callGemini(mimeType: string, base64: string, prompt: string, incl
         body: JSON.stringify({
           contents: [{ parts: [{ text: prompt }, { inline_data: { mime_type: mimeType, data: base64 } }] }],
           generationConfig: {
-            responseModalities: includeImage ? ['TEXT', 'IMAGE'] : ['TEXT'],
+            responseModalities: modalities,
             // A consistent, non-creative classifier for the JSON fields
             // benefits from a low temperature, which cuts down on the model
             // hedging into a vague name or the wrong category from run to
@@ -351,7 +360,7 @@ async function callGemini(mimeType: string, base64: string, prompt: string, incl
       const inline = imagePart?.inlineData ?? imagePart?.inline_data;
       const textPart = parts.find((part: any) => typeof part.text === 'string')?.text;
 
-      if (includeImage && !inline?.data) {
+      if (wantsImage && !inline?.data) {
         // Distinguishes a genuine content/safety refusal (which will recur
         // identically on retry — no point spending one) from Gemini simply
         // producing a text-only turn this one time (which a retry usually
@@ -380,7 +389,7 @@ async function callGemini(mimeType: string, base64: string, prompt: string, incl
         };
       }
 
-      if (!includeImage && !textPart) {
+      if (wantsText && !textPart) {
         return { status: 'error' as const, message: 'Réponse Gemini sans texte', code: 'NO_TEXT' };
       }
 
@@ -479,24 +488,60 @@ Deno.serve(async (req) => {
       }
     }
 
-    const prompt = body.classifyOnly
-      ? buildClassifyOnlyPrompt(body.language ?? 'fr')
-      : buildPrompt(body.language ?? 'fr');
-    const result = await callGemini(body.mimeType, body.base64, prompt, !body.classifyOnly);
-
-    // Only a redraw call (not classifyOnly) that actually produced an image is
-    // billed by Gemini — that's the event to count, regardless of whether the
-    // model later flagged the item "usable: false" in its own classification.
-    if (!body.classifyOnly && result.status === 'success' && result.image) {
-      const { error: usageError } = await adminClient.rpc('increment_photo_usage', {
-        p_user_id: user.id,
-        p_period_start: periodStart,
+    if (body.classifyOnly) {
+      const result = await callGemini(
+        body.mimeType,
+        body.base64,
+        buildClassifyOnlyPrompt(body.language ?? 'fr'),
+        ['TEXT']
+      );
+      return new Response(JSON.stringify(result), {
+        status: result.status === 'success' ? 200 : 502,
+        headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
       });
-      if (usageError) console.error('[edit-clothing-photo] échec incrément photo_usage', usageError);
     }
 
+    // Redraw and classification are two separate calls, deliberately never
+    // combined into one TEXT+IMAGE request — see callGemini's own comment
+    // for why that combination was unreliable. The redraw is the one that
+    // matters for billing and for whether this counts as a usable result at
+    // all; classification is best-effort on top of it.
+    const imageResult = await callGemini(body.mimeType, body.base64, REDRAW_INSTRUCTION, ['IMAGE']);
+
+    if (imageResult.status !== 'success' || !imageResult.image) {
+      return new Response(JSON.stringify(imageResult), {
+        status: 502,
+        headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+      });
+    }
+
+    const { error: usageError } = await adminClient.rpc('increment_photo_usage', {
+      p_user_id: user.id,
+      p_period_start: periodStart,
+    });
+    if (usageError) console.error('[edit-clothing-photo] échec incrément photo_usage', usageError);
+
+    // Best-effort: a failed classification here still leaves a perfectly
+    // usable image — the client already retries classification-only on a
+    // missing name/category (see analyzeClothingPhoto in
+    // utils/remove-background.ts), so there's no need to fail the whole
+    // request over this half.
+    const classifyResult = await callGemini(
+      body.mimeType,
+      body.base64,
+      buildClassifyOnlyPrompt(body.language ?? 'fr'),
+      ['TEXT']
+    );
+
+    const result = {
+      status: 'success' as const,
+      image: imageResult.image,
+      text: classifyResult.status === 'success' ? classifyResult.text : undefined,
+      message: 'OK',
+    };
+
     return new Response(JSON.stringify(result), {
-      status: result.status === 'success' ? 200 : 502,
+      status: 200,
       headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
     });
   } catch (error) {
