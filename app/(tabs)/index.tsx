@@ -1,6 +1,6 @@
 import * as Location from 'expo-location';
 import { router, useFocusEffect } from 'expo-router';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   LayoutChangeEvent,
   ScrollView,
@@ -65,6 +65,10 @@ export default function HomeScreen() {
   const styles = useMemo(() => createStyles(VestroColors), [VestroColors]);
   const [clothes, setClothes] = useState<ClothingItem[]>([]);
   const [isLoaded, setIsLoaded] = useState(false);
+  // Guards against an older loadFocusData call (see the focus effect below)
+  // resolving after a newer one and overwriting fresher data with a stale
+  // snapshot — see explore.tsx's identical guard for the full story.
+  const clothesTokenRef = useRef(0);
   const [selected, setSelected] = useState<Record<string, number[]>>({});
   const [layout, setLayout] = useState<Record<number, CanvasLayout>>({});
   const [activeCategories, setActiveCategories] = useState<string[]>(['Hauts']);
@@ -161,11 +165,15 @@ export default function HomeScreen() {
   useFocusEffect(
     useCallback(() => {
       async function loadFocusData() {
+        const token = ++clothesTokenRef.current;
         try {
           const parsedClothes = await fetchClothingItems();
+          const recent = await fetchOutfits();
+          if (clothesTokenRef.current !== token) return;
           setClothes(parsedClothes);
-          setRecentOutfits(await fetchOutfits());
+          setRecentOutfits(recent);
         } catch (error) {
+          if (clothesTokenRef.current !== token) return;
           alert(t('common.errorTitle'), String(error instanceof Error ? error.message : error));
         }
 
@@ -346,7 +354,7 @@ export default function HomeScreen() {
         showsVerticalScrollIndicator={false}
       >
       <View style={styles.topBar}>
-        <Text style={styles.logo} numberOfLines={2}>Crystal AI Closet</Text>
+        <Text style={styles.logo} numberOfLines={2}>Crystal : AI Closet</Text>
 
         <View style={styles.issueBlock}>
           <View style={styles.topBarIcons}>

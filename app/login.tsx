@@ -33,7 +33,7 @@ export default function LoginScreen() {
   return (
     <View style={styles.screen}>
       <View style={styles.content}>
-        <Text style={styles.logo}>Crystal AI Closet</Text>
+        <Text style={styles.logo}>Crystal : AI Closet</Text>
         <Text style={styles.tagline}>{t('auth.tagline')}</Text>
 
         <TouchableOpacity style={styles.appleButton} onPress={handlePress} disabled={submitting}>

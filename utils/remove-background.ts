@@ -27,6 +27,17 @@ const MAX_OUTPUT_WIDTH = 700;
 // last step, whether or not it also needed a resize.
 const OUTPUT_COMPRESS = 0.85;
 
+// Without this, a request that never gets a response (dropped connection
+// mid-flight, an edge function that hangs) leaves callEditClothingPhoto's
+// awaited invoke() pending forever — the try/catch below only ever catches a
+// REJECTED promise, never one that simply never resolves. That left the
+// full-screen ProcessingOverlay (see components/processing-overlay.tsx)
+// stuck up with no cancel button, blocking the whole app with no way back to
+// any tab. supabase-js's own `timeout` option aborts the underlying fetch
+// after this many ms, turning a silent hang into a real, catchable
+// FunctionsFetchError instead.
+const EDGE_FUNCTION_TIMEOUT_MS = 45000;
+
 // Reasons a source photo can't produce a clean isolated sticker — surfaced to
 // the user (via i18n `photoIssue.<code>`) so a rejected photo comes with a
 // concrete "try again because X" instead of a silent bad result.
@@ -134,44 +145,54 @@ export function splitDataUri(dataUri: string): { mimeType: string; base64: strin
   return { mimeType: match[1], base64: match[2] };
 }
 
-// Gemini never returns a pixel-perfect #FFFFFF background — it's always off by
-// a few RGB units, and often the backdrop isn't even flat (a soft studio
-// vignette, darker in the corners than the center, is common). Instead of one
-// global comparison, the flood-fill below grows outward from the border and
-// re-checks tolerance against each newly-cleared neighbor's own color (not
-// the original global sample) — so it can walk a slowly drifting gradient
-// step by step. A separate, looser cap against the original sampled color
-// still stops it from drifting arbitrarily far, so it can't eat through a
-// garment of gradually-changing shading far from the border.
+// The backdrop Gemini is asked to draw (see BACKGROUND_HEX in the
+// edit-clothing-photo edge function) is a synthetic, fully-saturated
+// chroma-key magenta specifically because no real garment or accessory is
+// ever legitimately that color — so unlike the old plain-white backdrop,
+// there's no meaningful risk in testing every pixel in the image directly
+// against the sampled background color, tolerance included for Gemini's own
+// rendering drift (it never returns a pixel-perfect hex match, and the fill
+// is rarely perfectly flat).
 //
-// Known limitation: this is plain chroma-keying, not real segmentation, so it
-// cannot tell a near-background pixel apart from a garment of a similar color
-// touching it. Two prompt-side fixes (a chroma-key magenta backdrop instead
-// of white, then an explicit "render fully opaque, hard edge" instruction)
-// each targeted a real cause but neither held up on retest: testers still saw
-// holes eaten deep into a sheer chiffon ruffle skirt and, separately, a
-// loosely-knit sweater — both garments whose *own* legitimate texture (a
-// fine weave, yarn-gap shadows) is itself a slowly-varying pattern of light
-// and dark, which is indistinguishable from a background vignette to a rule
-// that only ever asks "is this pixel close to the last one we cleared?". No
-// prompt wording fixes that — it's a property of the algorithm, not of what
-// Gemini draws.
-//
-// EDGE_DISTANCE_FOR_LOOSE_RULE draws the actual line: a real background
-// vignette is, by definition, only ever near the photo's outer frame — a
-// legitimate one never needs to explain a pixel deep inside the image. So
-// pixels within this many hops of the frame may still use the loose local +
-// global check below (handles a soft vignette or antialiasing near the
-// edge); once the flood-fill has walked further inward than that, it's
-// crawling through the interior of the picture — likely the garment's own
-// texture — and must instead match the ORIGINAL sampled background color
-// tightly (STRICT_MAX_DRIFT), not just resemble its immediate neighbor. This
-// caps how far a chain of small local steps can tunnel into a garment,
-// without needing the background to be a special color at all.
-const LOCAL_STEP_TOLERANCE = 16;
-const MAX_DRIFT_FROM_SAMPLE = 46;
-const EDGE_DISTANCE_FOR_LOOSE_RULE = 48;
-const STRICT_MAX_DRIFT = 16;
+// This used to instead be a flood-fill that only grew outward from the
+// image's outer border, because back when the backdrop was white, a
+// near-white pixel could legitimately belong to a pale garment, and the
+// border/hop-distance bookkeeping was how it avoided eating into one. That
+// bookkeeping has a structural blind spot a plain per-pixel test doesn't: any
+// item whose own silhouette has an enclosed loop or hole — a bag's handle, a
+// belt buckle, hoop earrings, glasses lenses — creates a pocket of background
+// pixels that a flood fill seeded from the frame can topologically never
+// reach, since it can never cross the opaque ring of the item itself. A
+// single anti-aliased or noisy pixel astride an otherwise-open, narrow
+// channel can silently wall off an entire legitimate background region the
+// same way. A tote bag photo surfaced exactly this: the whole area inside its
+// handle loop, and a strip near its base, stayed solid, glaring magenta
+// because the flood fill simply never visited them — a defect that existed
+// before the backdrop became magenta too, just invisible against white.
+// Comparing every pixel directly against the sampled background color has no
+// such blind spot, and magenta being nothing like a real fabric color means
+// it doesn't need one: real garment colors sit far enough away (a black item
+// is ~360 units away in this space, white ~255, a warm tan ~220) that this
+// tolerance can be generous without ever mistaking one for background.
+const BACKGROUND_COLOR_TOLERANCE = 80;
+
+// The flat per-pixel test above catches solid background but not the thin
+// ring of anti-aliased/blended pixels Gemini renders where the magenta
+// backdrop meets the garment — a 50/50 blend pixel there can be far enough
+// from pure magenta (per BACKGROUND_COLOR_TOLERANCE) to stay opaque, showing
+// up as a visible magenta fringe around every item. This second pass erodes
+// that fringe by walking outward from every pixel the first pass already
+// cleared, allowing a small per-step color drift (like the old border-seeded
+// flood fill used to) so it can follow a soft gradient — but capped at
+// EDGE_ERODE_HOP_LIMIT hops so it only ever nibbles a few pixels in from a
+// confirmed background region. That cap is what keeps this from
+// reintroducing the tunnel-into-texture bug the old algorithm had (see
+// history above): a real anti-aliased fringe is 1-3px wide, while a loose
+// knit's yarn-gap shadows or a sheer weave's texture extend far deeper than
+// this pass is ever allowed to walk.
+const EDGE_ERODE_HOP_LIMIT = 6;
+const EDGE_ERODE_LOCAL_TOLERANCE = 16;
+const EDGE_ERODE_MAX_DRIFT = 130;
 
 type Rgb = { r: number; g: number; b: number };
 
@@ -223,59 +244,106 @@ function pixelRgb(rgba: Uint8Array, pixelIndex: number): Rgb {
   return { r: rgba[offset], g: rgba[offset + 1], b: rgba[offset + 2] };
 }
 
-function snapBorderToTransparent(rgba: Uint8Array, width: number, height: number): number {
-  const background = sampleBackgroundColor(rgba, width, height);
-  const visited = new Uint8Array(width * height);
-  // A real queue (index cursor, not shift()), not the previous stack: hop
-  // counts below are only a meaningful "distance from the frame" if pixels
-  // are visited in non-decreasing distance order, which a stack-based DFS
-  // does not guarantee (it can snake far along one direction before ever
-  // trying the pixel right next to the border) — BFS does.
-  const queue: { pixelIndex: number; hops: number }[] = [];
+// Shared by keyOutBackground (fresh redraws, background sampled from the
+// border) and recutStoredSticker (already-cut stickers, background is the
+// known canonical magenta) — see EDGE_ERODE_* comment above for why this is
+// two passes rather than one.
+function keyOutBackgroundCore(rgba: Uint8Array, width: number, height: number, background: Rgb): number {
+  const size = width * height;
+  const settled = new Uint8Array(size);
+  const hopOf = new Uint8Array(size);
+  const queue: number[] = [];
   let head = 0;
   let cleared = 0;
 
-  function maybePush(x: number, y: number, ref: Rgb, hops: number) {
-    if (x < 0 || y < 0 || x >= width || y >= height) return;
-    const pixelIndex = y * width + x;
-    if (visited[pixelIndex]) return;
-    visited[pixelIndex] = 1;
-
-    const passesLocalStep = withinTolerance(rgba, pixelIndex, ref, LOCAL_STEP_TOLERANCE);
-    const eligible =
-      hops <= EDGE_DISTANCE_FOR_LOOSE_RULE
-        ? passesLocalStep && withinTolerance(rgba, pixelIndex, background, MAX_DRIFT_FROM_SAMPLE)
-        : passesLocalStep && withinTolerance(rgba, pixelIndex, background, STRICT_MAX_DRIFT);
-
-    if (eligible) {
-      queue.push({ pixelIndex, hops });
+  for (let pixelIndex = 0; pixelIndex < size; pixelIndex++) {
+    const alreadyTransparent = rgba[pixelIndex * 4 + 3] === 0;
+    if (alreadyTransparent || withinTolerance(rgba, pixelIndex, background, BACKGROUND_COLOR_TOLERANCE)) {
+      if (!alreadyTransparent) {
+        rgba[pixelIndex * 4 + 3] = 0;
+        cleared++;
+      }
+      settled[pixelIndex] = 1;
+      queue.push(pixelIndex);
     }
   }
 
-  for (let x = 0; x < width; x++) {
-    maybePush(x, 0, background, 0);
-    maybePush(x, height - 1, background, 0);
-  }
-  for (let y = 0; y < height; y++) {
-    maybePush(0, y, background, 0);
-    maybePush(width - 1, y, background, 0);
-  }
-
   while (head < queue.length) {
-    const { pixelIndex, hops } = queue[head++];
-    const ref = pixelRgb(rgba, pixelIndex);
-    rgba[pixelIndex * 4 + 3] = 0;
-    cleared++;
+    const pixelIndex = queue[head];
+    const hops = hopOf[pixelIndex];
+    head++;
+    if (hops >= EDGE_ERODE_HOP_LIMIT) continue;
 
+    const ref = pixelRgb(rgba, pixelIndex);
     const x = pixelIndex % width;
     const y = (pixelIndex - x) / width;
-    maybePush(x - 1, y, ref, hops + 1);
-    maybePush(x + 1, y, ref, hops + 1);
-    maybePush(x, y - 1, ref, hops + 1);
-    maybePush(x, y + 1, ref, hops + 1);
+    const neighbors: [number, number][] = [
+      [x - 1, y],
+      [x + 1, y],
+      [x, y - 1],
+      [x, y + 1],
+    ];
+
+    for (const [nx, ny] of neighbors) {
+      if (nx < 0 || ny < 0 || nx >= width || ny >= height) continue;
+      const ni = ny * width + nx;
+      if (settled[ni]) continue;
+
+      const passesLocalStep = withinTolerance(rgba, ni, ref, EDGE_ERODE_LOCAL_TOLERANCE);
+      const passesDriftFromBackground = withinTolerance(rgba, ni, background, EDGE_ERODE_MAX_DRIFT);
+      if (passesLocalStep && passesDriftFromBackground) {
+        rgba[ni * 4 + 3] = 0;
+        cleared++;
+        settled[ni] = 1;
+        hopOf[ni] = hops + 1;
+        queue.push(ni);
+      }
+    }
   }
 
   return cleared;
+}
+
+function keyOutBackground(rgba: Uint8Array, width: number, height: number): number {
+  const background = sampleBackgroundColor(rgba, width, height);
+  return keyOutBackgroundCore(rgba, width, height, background);
+}
+
+// The exact magenta Gemini is asked to draw (see BACKGROUND_HEX
+// server-side) — used as a fixed fallback reference for recutStoredSticker
+// below, where sampling the image's own border (as keyOutBackground does)
+// isn't an option: a sticker that already went through one cutout pass has
+// a mostly-transparent border, not a magenta one.
+const CANONICAL_BACKGROUND: Rgb = { r: 255, g: 0, b: 255 };
+
+// A sticker cut by the old border-seeded flood fill (before keyOutBackground
+// replaced it — see its own comment) can have solid, uncut magenta trapped
+// wherever the item's own silhouette encloses a loop or hole: a bag handle,
+// glasses lenses, a bracelet. Since the actual pixel data of the *already
+// generated* redraw is unaffected by which cutout algorithm ran, no new
+// Gemini call is needed to fix it — this just re-keys the same image with
+// the current algorithm, comparing every still-opaque pixel against the
+// known magenta rather than a border sample. Returns `cleared: 0` and the
+// original image untouched when there's nothing left to clean up, so a
+// caller can skip re-uploading a sticker that was already fine.
+export async function recutStoredSticker(
+  dataUri: string,
+  tag: string
+): Promise<{ image: string; cleared: number }> {
+  const pngDataUri = await ensurePngDataUri(dataUri, tag);
+  const { base64 } = splitDataUri(pngDataUri);
+  const decoded = UPNG.decode(toByteArray(base64).buffer);
+  const rgba = new Uint8Array(UPNG.toRGBA8(decoded)[0]);
+
+  const cleared = keyOutBackgroundCore(rgba, decoded.width, decoded.height, CANONICAL_BACKGROUND);
+  if (cleared === 0) return { image: dataUri, cleared: 0 };
+
+  const encoded = UPNG.encode([rgba.buffer], decoded.width, decoded.height, 0);
+  const outBase64 = fromByteArray(new Uint8Array(encoded));
+  console.log(`${tag} recadrage magenta: ${cleared} pixels supplémentaires rendus transparents`);
+  const transparentDataUri = `data:image/png;base64,${outBase64}`;
+
+  return { image: await finalizeSticker(transparentDataUri, decoded.width, tag), cleared };
 }
 
 // Gemini is asked to redraw the item on a flat background, but it commonly
@@ -314,7 +382,7 @@ async function finalizeSticker(pngDataUri: string, width: number, tag: string): 
 // Re-encodes an already-processed sticker (one stored before WebP output
 // existed) to the current format/size — used for the one-time migration of
 // existing clothing photos, as opposed to makeBackgroundTransparent below
-// which also re-does the flood-fill cutout for a freshly-generated image.
+// which also re-does the background keying for a freshly-generated image.
 export async function resizeStoredImageIfNeeded(
   dataUri: string,
   tag: string
@@ -344,7 +412,7 @@ async function makeBackgroundTransparent(rawImageDataUri: string, tag: string): 
     const decoded = UPNG.decode(pngBytes.buffer);
     const rgba = new Uint8Array(UPNG.toRGBA8(decoded)[0]);
 
-    const cleared = snapBorderToTransparent(rgba, decoded.width, decoded.height);
+    const cleared = keyOutBackground(rgba, decoded.width, decoded.height);
 
     const encoded = UPNG.encode([rgba.buffer], decoded.width, decoded.height, 0);
     const outBase64 = fromByteArray(new Uint8Array(encoded));
@@ -400,7 +468,7 @@ async function callEditClothingPhoto(
 
     const { data, error } = await supabase.functions.invoke<EditClothingPhotoResponse>(
       'edit-clothing-photo',
-      { body: { language, mimeType, base64 } }
+      { body: { language, mimeType, base64 }, timeout: EDGE_FUNCTION_TIMEOUT_MS }
     );
 
     if (error) {
@@ -448,7 +516,7 @@ async function classifyOnly(
   try {
     const { data, error } = await supabase.functions.invoke<EditClothingPhotoResponse>(
       'edit-clothing-photo',
-      { body: { language, mimeType, base64, classifyOnly: true } }
+      { body: { language, mimeType, base64, classifyOnly: true }, timeout: EDGE_FUNCTION_TIMEOUT_MS }
     );
 
     if (error) {
@@ -527,6 +595,16 @@ export type ClothingAnalysis = {
    * means, without exposing why.
    */
   errorCode?: string;
+  /**
+   * Set only for errorCode 'NO_IMAGE'/'NO_TEXT' — Gemini's own text response
+   * when it was asked for an image but didn't return one (a content
+   * refusal, a safety filter, or similar), truncated server-side. Unlike
+   * other error codes this is safe and useful to show directly: it's never
+   * billing/infra detail, and it's often the one thing that actually
+   * explains why a specific photo keeps failing (e.g. Gemini declining to
+   * redraw a person's photo for a safety reason).
+   */
+  errorDetail?: string;
 };
 
 /**
@@ -539,7 +617,12 @@ export type ClothingAnalysis = {
  * photo (it's juggling the image redraw and the classification in the same
  * pass) — when that happens we retry the call once rather than immediately
  * falling back to a generic "Vêtement N" name, since a second pass usually
- * gets a complete answer.
+ * gets a complete answer. A photo the model flags as outright "unusable" gets
+ * the same kind of second look, but is always accepted regardless of the
+ * outcome — a successful call always came with a real generated image, so
+ * the only genuine rejections left are actual technical failures (see the
+ * `outcome.status !== 'success'` branch below): no photo is ever turned away
+ * on a content judgment call alone.
  */
 export async function analyzeClothingPhoto(
   imageUri: string,
@@ -562,17 +645,47 @@ export async function analyzeClothingPhoto(
   // explains that specifically; every other failure gets 'technical_error'.
   if (outcome.status !== 'success') {
     const isQuota = outcome.code === 'quota_exceeded';
+    const showsDetail = outcome.code === 'NO_IMAGE' || outcome.code === 'NO_TEXT';
     return {
       image: outcome.image,
       usable: false,
       issue: isQuota ? 'quota_exceeded' : 'technical_error',
       errorCode: isQuota ? undefined : outcome.code ?? 'UNKNOWN',
+      errorDetail: showsDetail ? outcome.message : undefined,
     };
   }
 
   const metadata = parseClothingMetadata(outcome.text, tag);
 
-  if (metadata.usable !== false && (!metadata.name || !metadata.category)) {
+  // A successful redraw call always produced a real image — callGemini
+  // itself returns NO_IMAGE (routed through the outcome.status !== 'success'
+  // branch above, a genuine rejection) whenever Gemini didn't draw anything
+  // at all. So a "usable: false" here never means "there is nothing to show
+  // the user" — it's purely the model's own separate self-assessment,
+  // written in the same pass where it was busy redrawing the item at a
+  // non-zero temperature (see callGemini's generationConfig server-side),
+  // and demonstrably inconsistent from one read of the same photo to the
+  // next. Vestro's product decision is to never turn away a garment the
+  // model was actually willing to draw: a free classifyOnly second opinion
+  // (no new image, doesn't count against the monthly quota) gets one more
+  // chance to fill in a clean name/category, but whether or not it flips the
+  // verdict, the already-generated image is always accepted — the only
+  // rejections left are the ones above, where there is truly no image to
+  // fall back on (a real technical failure) or the model refused to draw
+  // anything in the first place.
+  if (metadata.usable === false) {
+    console.warn(`${tag} photo jugée inexploitable par le modèle, second avis avant acceptation…`);
+    const retryOutcome = await classifyOnly(sourceDataUri, language, tag);
+    const retryMetadata = retryOutcome.status === 'success' ? parseClothingMetadata(retryOutcome.text, tag) : undefined;
+    return {
+      image: outcome.image,
+      name: metadata.name ?? retryMetadata?.name,
+      category: metadata.category ?? retryMetadata?.category,
+      color: metadata.color ?? retryMetadata?.color,
+    };
+  }
+
+  if (!metadata.name || !metadata.category) {
     console.warn(`${tag} nom ou catégorie manquant, nouvelle tentative (classification seule)…`);
     const retryOutcome = await classifyOnly(sourceDataUri, language, tag);
     if (retryOutcome.status === 'success') {

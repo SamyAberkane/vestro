@@ -26,7 +26,7 @@ import { AuthProvider, useAuth } from '@/auth/context';
 import { AlertHost } from '@/components/alert-host';
 import { Onboarding } from '@/components/onboarding';
 import { I18nProvider } from '@/i18n/context';
-import { optimizeStoredImages } from '@/lib/clothing';
+import { optimizeStoredImages, recutStoredImageBackgrounds } from '@/lib/clothing';
 import { initIAP, teardownIAP } from '@/lib/premium';
 import { AppThemeProvider, useAppTheme } from '@/theme/context';
 
@@ -36,6 +36,13 @@ const ONBOARDING_KEY = 'vestro-onboarding-seen';
 // in utils/remove-background.ts) gets caught up automatically — no UI, no
 // user action, runs once per account and never again once it succeeds.
 const IMAGES_OPTIMIZED_KEY = 'vestro-images-optimized-v2';
+// Same one-time, silent pattern as above, for a different cleanup: any photo
+// cut by the old border-seeded flood fill (see keyOutBackground in
+// utils/remove-background.ts) can have leftover solid magenta trapped inside
+// an enclosed shape — a bag handle, glasses lenses — that fill could never
+// reach. This re-keys every stored photo with the current algorithm; no new
+// Gemini call, so no quota cost either way.
+const MAGENTA_RECUT_KEY = 'vestro-magenta-recut-v1';
 
 export const unstable_settings = {
   anchor: '(tabs)',
@@ -61,6 +68,14 @@ function RootNavigator() {
       optimizeStoredImages()
         .then(() => AsyncStorage.setItem(IMAGES_OPTIMIZED_KEY, 'true'))
         .catch((error) => console.warn('[imageOptimization] échec, nouvel essai au prochain lancement', error));
+    });
+
+    AsyncStorage.getItem(MAGENTA_RECUT_KEY).then((done) => {
+      if (done === 'true') return;
+
+      recutStoredImageBackgrounds()
+        .then(() => AsyncStorage.setItem(MAGENTA_RECUT_KEY, 'true'))
+        .catch((error) => console.warn('[magentaRecut] échec, nouvel essai au prochain lancement', error));
     });
   }, [isSignedIn]);
 

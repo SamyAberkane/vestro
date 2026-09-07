@@ -242,7 +242,15 @@ export default function CreateOutfitScreen() {
 
     try {
       await saveActiveLook({ itemIds, layout: savedLayout });
-      alert(t('home.wornTitle'), t('home.wornMessage'));
+      // No success alert here on purpose: this screen is a native modal
+      // presentation (see app/_layout.tsx), and AlertHost's confirmation is
+      // ALSO a native Modal — showing one on top of the other and then
+      // dismissing both in quick succession (tap the alert's OK, then Cancel
+      // or swipe to leave) races two overlapping UIKit modal transitions,
+      // which is what was freezing the app after "wear this outfit" from a
+      // recently-viewed outfit. isCurrentlyWorn already flips this screen's
+      // button to the worn banner the instant the save lands, which is
+      // confirmation enough without a second modal to dismiss.
     } catch (error) {
       alert(t('common.errorTitle'), String(error instanceof Error ? error.message : error));
     }

@@ -1,7 +1,7 @@
 import { invalidateCache, readThroughCache } from '@/lib/offline-cache';
 import { supabase } from '@/lib/supabase';
 import type { ClothingItem, ClothingStatus } from '@/types/clothing';
-import { resizeStoredImageIfNeeded, splitDataUri, uriToDataUri } from '@/utils/remove-background';
+import { recutStoredSticker, resizeStoredImageIfNeeded, splitDataUri, uriToDataUri } from '@/utils/remove-background';
 import { deleteClothingImage, getSignedImageUrls, uploadClothingImage } from '@/utils/storage';
 
 type ClothingRow = {
@@ -84,11 +84,15 @@ export async function fetchClothingItemsByIds(ids: number[]): Promise<ClothingIt
   if (ids.length === 0) return [];
 
   const cacheKey = `clothing-items-by-ids:${[...ids].sort((a, b) => a - b).join(',')}`;
-  return readThroughCache(cacheKey, async () => {
-    const { data, error } = await supabase.from('clothing_items').select('*').in('id', ids);
-    if (error) throw new Error(error.message);
-    return rowsToItems(data ?? []);
-  });
+  return readThroughCache(
+    cacheKey,
+    async () => {
+      const { data, error } = await supabase.from('clothing_items').select('*').in('id', ids);
+      if (error) throw new Error(error.message);
+      return rowsToItems(data ?? []);
+    },
+    'clothing-items'
+  );
 }
 
 export type NewClothingItem = {
@@ -153,12 +157,14 @@ export async function updateClothingItem(id: number, patch: ClothingItemPatch): 
   const { error } = await supabase.from('clothing_items').update(update).eq('id', id);
   if (error) throw new Error(error.message);
   await invalidateCache('clothing-items');
+  notifyClothingItemsChanged();
 }
 
 export async function deleteClothingItem(id: number): Promise<void> {
   const { error } = await supabase.from('clothing_items').delete().eq('id', id);
   if (error) throw new Error(error.message);
   await invalidateCache('clothing-items');
+  notifyClothingItemsChanged();
 }
 
 export type OptimizeImagesResult = { optimized: number; skipped: number; failed: number };
@@ -189,6 +195,18 @@ export async function optimizeStoredImages(
   for (let i = 0; i < rows.length; i++) {
     const row = rows[i];
     const tag = `[optimizeStoredImages #${row.id}]`;
+
+    // This is a silent background pass (see the one-time trigger in
+    // app/_layout.tsx) running while the user is actively using the app —
+    // the PNG decode/re-encode below is synchronous, CPU-bound work on the
+    // JS thread, the same thread that drives navigation and touch handling.
+    // Without a yield between items, a wardrobe of any real size runs this
+    // as one unbroken block and the whole app appears frozen for as long as
+    // it takes — exactly the freeze reported after switching tabs shortly
+    // after sign-in. A one-tick yield per item costs nothing to the job
+    // itself but gives the JS thread a chance to handle a pending
+    // navigation/gesture in between.
+    await new Promise((resolve) => setTimeout(resolve, 0));
 
     try {
       const urls = await getSignedImageUrls([row.image_path]);
@@ -232,6 +250,87 @@ export async function optimizeStoredImages(
   );
 
   if (result.optimized > 0) {
+    await invalidateCache('clothing-items');
+    notifyClothingItemsChanged();
+  }
+  return result;
+}
+
+export type RecutBackgroundsResult = { recut: number; skipped: number; failed: number };
+
+// One-time cleanup pass over every stored clothing photo, catching leftover
+// solid magenta that the old border-seeded cutout (replaced by
+// keyOutBackground — see utils/remove-background.ts) could never reach:
+// anywhere the item's own silhouette encloses a loop or hole, like a bag
+// handle, glasses lenses, or a bracelet. No new Gemini call — the already
+// generated image just gets re-keyed with the current algorithm, so this
+// costs nothing against the monthly quota. Runs over every item rather than
+// filtering by filename (unlike optimizeStoredImages above) because both the
+// old and new algorithms produce the same .webp extension; recutStoredSticker
+// itself is what decides per-image whether there's anything to redo.
+export async function recutStoredImageBackgrounds(
+  onProgress?: (done: number, total: number) => void
+): Promise<RecutBackgroundsResult> {
+  const userId = await requireUserId();
+
+  const { data, error } = await supabase
+    .from('clothing_items')
+    .select('id, image_path')
+    .not('image_path', 'is', null);
+  if (error) throw new Error(error.message);
+
+  const rows = (data ?? []) as { id: number; image_path: string }[];
+  const result: RecutBackgroundsResult = { recut: 0, skipped: 0, failed: 0 };
+  console.log(`[recutStoredImageBackgrounds] démarrage sur ${rows.length} articles`);
+
+  for (let i = 0; i < rows.length; i++) {
+    const row = rows[i];
+    const tag = `[recutStoredImageBackgrounds #${row.id}]`;
+
+    // Same reason as the identical yield in optimizeStoredImages above —
+    // this is the second silent one-time background pass triggered from
+    // app/_layout.tsx, doing the same kind of synchronous decode/pixel-walk/
+    // encode work per item.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    try {
+      const urls = await getSignedImageUrls([row.image_path]);
+      const signedUrl = urls[row.image_path];
+      if (!signedUrl) {
+        console.log(`${tag} pas d'URL signée, ignoré`);
+        result.skipped++;
+        continue;
+      }
+
+      const dataUri = await uriToDataUri(signedUrl);
+      const { image, cleared } = await recutStoredSticker(dataUri, tag);
+
+      if (cleared === 0) {
+        result.skipped++;
+      } else {
+        const newPath = await uploadClothingImage(userId, image);
+        const { error: updateError } = await supabase
+          .from('clothing_items')
+          .update({ image_path: newPath })
+          .eq('id', row.id);
+        if (updateError) throw updateError;
+
+        await deleteClothingImage(row.image_path);
+        result.recut++;
+      }
+    } catch (itemError) {
+      console.warn(`${tag} échec`, itemError);
+      result.failed++;
+    }
+
+    onProgress?.(i + 1, rows.length);
+  }
+
+  console.log(
+    `[recutStoredImageBackgrounds] terminé: ${result.recut} recadrées, ${result.skipped} ignorées, ${result.failed} échecs`
+  );
+
+  if (result.recut > 0) {
     await invalidateCache('clothing-items');
     notifyClothingItemsChanged();
   }

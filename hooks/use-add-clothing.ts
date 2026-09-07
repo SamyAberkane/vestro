@@ -20,6 +20,13 @@ export function useAddClothing() {
   const [paywallVisible, setPaywallVisible] = useState(false);
   const photoTipsResolveRef = useRef<(() => void) | null>(null);
   const isProcessing = processingImageUri !== undefined;
+  // Lets cancelProcessing hide the full-screen overlay immediately instead of
+  // it being stuck up until the in-flight analyzeClothingPhoto call settles —
+  // that call now has its own network timeout (see EDGE_FUNCTION_TIMEOUT_MS
+  // in utils/remove-background.ts), but a user shouldn't have to wait out a
+  // 45s timeout just to get back to the rest of the app. The in-flight call
+  // itself isn't aborted, just ignored once it resolves.
+  const cancelledRef = useRef(false);
 
   // Split in two on purpose: closing the modal (button tap) and actually
   // continuing (resolving the promise addClothing is awaiting) can't happen
@@ -116,16 +123,23 @@ export function useAddClothing() {
     }
 
     const newItems = [];
-    const rejected: { index: number; issue: PhotoIssue; errorCode?: string }[] = [];
+    const rejected: { index: number; issue: PhotoIssue; errorCode?: string; errorDetail?: string }[] = [];
+    cancelledRef.current = false;
 
     for (let i = 0; i < assets.length; i++) {
       setBatchStep({ index: i + 1, count: assets.length });
       setProcessingImageUri(assets[i].uri);
 
       const analysis = await analyzeClothingPhoto(assets[i].uri, language);
+      if (cancelledRef.current) return;
 
       if (analysis.usable === false) {
-        rejected.push({ index: i + 1, issue: analysis.issue ?? 'other', errorCode: analysis.errorCode });
+        rejected.push({
+          index: i + 1,
+          issue: analysis.issue ?? 'other',
+          errorCode: analysis.errorCode,
+          errorDetail: analysis.errorDetail,
+        });
         continue;
       }
 
@@ -143,9 +157,10 @@ export function useAddClothing() {
 
     if (rejected.length > 0) {
       const lines = rejected.map((r) => {
-        const text = r.errorCode
+        const base = r.errorCode
           ? t('photoIssue.technical_error', { code: r.errorCode })
           : t(`photoIssue.${r.issue}`);
+        const text = r.errorDetail ? `${base}\n${r.errorDetail}` : base;
         return assets.length > 1
           ? `${t('processing.stepLabel', { index: r.index, count: assets.length })} — ${text}`
           : text;
@@ -171,6 +186,16 @@ export function useAddClothing() {
     router.navigate('/(tabs)/explore');
   }
 
+  // The user's own escape hatch out of the processing overlay — see
+  // ProcessingOverlay's onCancel. Hides the overlay immediately rather than
+  // waiting for the current photo's analyzeClothingPhoto call to settle, and
+  // the cancelledRef check right after that await stops the batch from
+  // inserting anything once it does.
+  function cancelProcessing() {
+    cancelledRef.current = true;
+    setProcessingImageUri(undefined);
+  }
+
   return {
     addClothing,
     isProcessing,
@@ -183,5 +208,6 @@ export function useAddClothing() {
     onPhotoTipsDismissed,
     paywallVisible,
     dismissPaywall: () => setPaywallVisible(false),
+    cancelProcessing,
   };
 }

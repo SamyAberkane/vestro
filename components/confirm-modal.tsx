@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Modal, Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { AppColors, VestroFonts } from '@/constants/theme';
@@ -30,23 +30,58 @@ export function ConfirmModal({
   const { colors: VestroColors } = useAppTheme();
   const styles = useMemo(() => createStyles(VestroColors), [VestroColors]);
 
+  // This modal is often shown on a screen that's itself a native modal
+  // presentation (e.g. create-outfit — see app/_layout.tsx), and onConfirm
+  // often navigates away (delete an outfit, then router.back()). Calling
+  // onConfirm/onCancel the instant a button is pressed — before the native
+  // <Modal> below has actually finished its own dismiss animation — used to
+  // race that outer screen's dismissal against this one's, which is what
+  // froze the whole app after confirming a delete. `isOpen` is this
+  // component's own gate on the native Modal (separate from the `visible`
+  // prop): pressing a button closes it immediately and queues the real
+  // callback in `pendingRef`, which only fires from onDismiss once iOS
+  // reports the modal is actually, fully gone.
+  const [isOpen, setIsOpen] = useState(visible);
+  const pendingRef = useRef<(() => void) | null>(null);
+
+  useEffect(() => {
+    if (visible) setIsOpen(true);
+  }, [visible]);
+
+  function requestClose(action: () => void) {
+    pendingRef.current = action;
+    setIsOpen(false);
+  }
+
+  function handleDismiss() {
+    const action = pendingRef.current;
+    pendingRef.current = null;
+    action?.();
+  }
+
   return (
-    <Modal visible={visible} transparent animationType="fade" onRequestClose={onCancel}>
-      <Pressable style={styles.backdrop} onPress={onCancel}>
+    <Modal
+      visible={isOpen}
+      transparent
+      animationType="fade"
+      onRequestClose={() => requestClose(onCancel)}
+      onDismiss={handleDismiss}
+    >
+      <Pressable style={styles.backdrop} onPress={() => requestClose(onCancel)}>
         <Pressable style={styles.sheet} onPress={(e) => e.stopPropagation()}>
           <Text style={styles.title}>{title}</Text>
           {message && <Text style={styles.message}>{message}</Text>}
 
           <Pressable
             style={[styles.confirmButton, destructive && styles.confirmButtonDestructive]}
-            onPress={onConfirm}
+            onPress={() => requestClose(onConfirm)}
           >
             <Text style={[styles.confirmText, destructive && styles.confirmTextDestructive]}>
               {confirmLabel}
             </Text>
           </Pressable>
 
-          <Pressable style={styles.cancelButton} onPress={onCancel}>
+          <Pressable style={styles.cancelButton} onPress={() => requestClose(onCancel)}>
             <Text style={styles.cancelText}>{cancelLabel}</Text>
           </Pressable>
         </Pressable>

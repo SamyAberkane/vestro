@@ -44,7 +44,9 @@ export default function WishlistScreen() {
   const [processingImageUri, setProcessingImageUri] = useState<string | undefined>(undefined);
   const isProcessingImage = processingImageUri !== undefined;
   const [batchStep, setBatchStep] = useState({ index: 1, count: 1 });
-  const [selectedCategory, setSelectedCategory] = useState('Tout');
+  // Empty means "Tout" (no filter) — several categories can be active at
+  // once (see toggleCategoryFilter), same as the home and closet screens.
+  const [selectedCategories, setSelectedCategories] = useState<string[]>([]);
   const [columns, setColumns] = useState<2 | 3>(2);
   const [colorPickerVisible, setColorPickerVisible] = useState(false);
   const colorSelectRef = useRef<((color: string | undefined) => void) | null>(null);
@@ -57,6 +59,12 @@ export default function WishlistScreen() {
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
   const [bulkDeleteConfirmVisible, setBulkDeleteConfirmVisible] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
+  // Bumped by every optimistic local edit to `clothes` (delete, bulk delete,
+  // update) AND by every loadClothes() call — see explore.tsx's identical
+  // guard for why: without it, a slow fetchClothingItems() started just
+  // before a delete can resolve just after it and silently put the deleted
+  // item right back into state.
+  const clothesTokenRef = useRef(0);
 
   function openColorPicker(
     onPick: (color: string | undefined) => void,
@@ -82,10 +90,14 @@ export default function WishlistScreen() {
   }
 
   const loadClothes = useCallback(async () => {
+    const token = ++clothesTokenRef.current;
     try {
-      setClothes(await fetchClothingItems());
+      const data = await fetchClothingItems();
+      if (clothesTokenRef.current === token) setClothes(data);
     } catch (error) {
-      alert(t('common.errorTitle'), String(error instanceof Error ? error.message : error));
+      if (clothesTokenRef.current === token) {
+        alert(t('common.errorTitle'), String(error instanceof Error ? error.message : error));
+      }
     }
 
     setIsLoaded(true);
@@ -109,9 +121,24 @@ export default function WishlistScreen() {
   );
 
   const filteredWishlistItems =
-    selectedCategory === 'Tout'
+    selectedCategories.length === 0
       ? wishlistItems
-      : wishlistItems.filter((item) => item.category === selectedCategory);
+      : wishlistItems.filter((item) => selectedCategories.includes(item.category));
+
+  // "Tout" clears every filter back to showing everything; any other pill
+  // toggles independently of the rest, so several categories can be active
+  // together.
+  function toggleCategoryFilter(category: string) {
+    if (category === 'Tout') {
+      setSelectedCategories([]);
+      return;
+    }
+    setSelectedCategories((current) =>
+      current.includes(category)
+        ? current.filter((existing) => existing !== category)
+        : [...current, category]
+    );
+  }
 
   // Same 2/3-column target-width approach as the Dressing tab: fit as many
   // cards of the chosen target size as the screen allows.
@@ -130,6 +157,7 @@ export default function WishlistScreen() {
     // immediate preview and drop the now-stale `imagePath` (its cache key)
     // rather than let a new photo render under an old cache entry.
     const { imageDataUri, ...rest } = patch;
+    clothesTokenRef.current++;
     setClothes((currentClothes) =>
       currentClothes.map((clothing) =>
         clothing.id === id
@@ -225,6 +253,7 @@ export default function WishlistScreen() {
     setSelectionMode(false);
     setSelectedIds(new Set());
 
+    clothesTokenRef.current++;
     setClothes((currentClothes) => currentClothes.filter((clothing) => !ids.includes(clothing.id)));
 
     const results = await Promise.allSettled(ids.map((id) => deleteClothingItem(id)));
@@ -300,13 +329,14 @@ export default function WishlistScreen() {
           contentContainerStyle={styles.filters}
         >
           {['Tout', ...VestroCategories].map((category) => {
-            const active = selectedCategory === category;
+            const active =
+              category === 'Tout' ? selectedCategories.length === 0 : selectedCategories.includes(category);
 
             return (
               <TouchableOpacity
                 key={category}
                 style={active ? styles.activeFilter : styles.filter}
-                onPress={() => setSelectedCategory(category)}
+                onPress={() => toggleCategoryFilter(category)}
               >
                 <Text style={active ? styles.activeFilterText : styles.filterText}>
                   {category === 'Tout' ? t('dressing.filterAll') : tCategory(category)}
@@ -460,6 +490,7 @@ export default function WishlistScreen() {
         onDelete={() => {
           if (!optionsItem) return;
           const targetId = optionsItem.id;
+          clothesTokenRef.current++;
           setClothes((currentClothes) => currentClothes.filter((clothing) => clothing.id !== targetId));
           setOptionsItemId(null);
           deleteClothingItem(targetId).catch((error) =>

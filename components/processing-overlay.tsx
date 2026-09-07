@@ -1,6 +1,6 @@
 import { Ionicons } from '@expo/vector-icons';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Image, StyleSheet, Text, View } from 'react-native';
+import { Image, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import Animated, {
   Easing,
   FadeIn,
@@ -39,6 +39,15 @@ type ProcessingOverlayProps = {
   stepIndex?: number;
   /** Total number of photos in the batch. */
   stepCount?: number;
+  /**
+   * The only way out of this overlay — it has no other close button and
+   * covers the whole screen, so without this a hung request (network drop,
+   * a server-side stall) leaves the user unable to reach any tab at all.
+   * Hidden once the "done" checkmark shows, since there's nothing left to
+   * cancel by then. Optional only so existing snapshot/story usages don't
+   * need updating.
+   */
+  onCancel?: () => void;
 };
 
 function messageKeyForSliceFraction(fraction: number): 'processing.analyzing' | 'processing.removingBackground' | 'processing.finalizing' {
@@ -123,7 +132,7 @@ function StatusIcon({ done }: { done: boolean }) {
   );
 }
 
-export function ProcessingOverlay({ visible, imageUri, stepIndex = 1, stepCount = 1 }: ProcessingOverlayProps) {
+export function ProcessingOverlay({ visible, imageUri, stepIndex = 1, stepCount = 1, onCancel }: ProcessingOverlayProps) {
   const { t } = useI18n();
   const { colors: VestroColors } = useAppTheme();
   const styles = useMemo(() => createStyles(VestroColors), [VestroColors]);
@@ -237,6 +246,12 @@ export function ProcessingOverlay({ visible, imageUri, stepIndex = 1, stepCount 
 
         <Text style={styles.subtext}>{t('processing.subtext')}</Text>
         <Text style={styles.creditCost}>💎 {t('processing.creditCost')}</Text>
+
+        {!done && onCancel && (
+          <TouchableOpacity style={styles.cancelButton} onPress={onCancel} hitSlop={10}>
+            <Text style={styles.cancelText}>{t('common.cancel')}</Text>
+          </TouchableOpacity>
+        )}
       </View>
     </View>
   );
@@ -365,5 +380,16 @@ const createStyles = (VestroColors: AppColors) => StyleSheet.create({
     letterSpacing: 0.3,
     color: VestroColors.ink,
     textAlign: 'center',
+  },
+  cancelButton: {
+    marginTop: 18,
+  },
+  cancelText: {
+    fontFamily: VestroFonts.sansMedium,
+    fontSize: 11,
+    letterSpacing: 1,
+    textTransform: 'uppercase',
+    color: VestroColors.muted,
+    textDecorationLine: 'underline',
   },
 });

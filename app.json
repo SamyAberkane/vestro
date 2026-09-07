@@ -1,6 +1,6 @@
 {
   "expo": {
-    "name": "Crystal AI Closet",
+    "name": "Crystal : AI Closet",
     "slug": "vestro",
     "version": "2.0.0",
     "orientation": "portrait",
@@ -61,13 +61,13 @@
       [
         "expo-location",
         {
-          "locationWhenInUsePermission": "Crystal AI Closet utilise ta position pour afficher la météo du jour."
+          "locationWhenInUsePermission": "Crystal : AI Closet utilise ta position pour afficher la météo du jour."
         }
       ],
       [
         "expo-image-picker",
         {
-          "photosPermission": "Crystal AI Closet accède à tes photos pour ajouter des vêtements à ton dressing."
+          "photosPermission": "Crystal : AI Closet accède à tes photos pour ajouter des vêtements à ton dressing."
         }
       ],
       "expo-localization",

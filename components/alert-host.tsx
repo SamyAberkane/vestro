@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Modal, Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { AppColors, VestroFonts } from '@/constants/theme';
@@ -15,14 +15,42 @@ const DESTRUCTIVE_RED = '#DC2626';
  */
 export function AlertHost() {
   const [state, setState] = useState<AlertState | null>(null);
+  // Separate from `state`/subscribeToAlert on purpose — a button's onPress
+  // often does something that navigates (sign-out after account deletion,
+  // etc.), and this alert is frequently shown on top of a screen that's
+  // itself a native modal presentation (create-outfit, account — see
+  // app/_layout.tsx). Firing onPress the instant a button is tapped, before
+  // this native <Modal> has actually finished dismissing, raced that outer
+  // screen's own dismissal against this one's and froze the app. `isOpen`
+  // gates the native Modal directly; a tap closes it right away and queues
+  // the real work in `pendingRef`, which only runs from onDismiss once iOS
+  // confirms the modal is fully gone.
+  const [isOpen, setIsOpen] = useState(false);
+  const pendingRef = useRef<(() => void) | null>(null);
   const { colors: VestroColors } = useAppTheme();
   const styles = useMemo(() => createStyles(VestroColors), [VestroColors]);
 
-  useEffect(() => subscribeToAlert(setState), []);
+  useEffect(
+    () =>
+      subscribeToAlert((next) => {
+        setState(next);
+        if (next) setIsOpen(true);
+      }),
+    []
+  );
 
   function handlePress(button: AlertButton) {
-    dismissAlert();
-    button.onPress?.();
+    pendingRef.current = () => {
+      dismissAlert();
+      button.onPress?.();
+    };
+    setIsOpen(false);
+  }
+
+  function handleDismiss() {
+    const action = pendingRef.current;
+    pendingRef.current = null;
+    action?.();
   }
 
   const cancelButton = state?.buttons.find((button) => button.style === 'cancel');
@@ -30,10 +58,11 @@ export function AlertHost() {
 
   return (
     <Modal
-      visible={state !== null}
+      visible={isOpen}
       transparent
       animationType="fade"
       onRequestClose={() => cancelButton && handlePress(cancelButton)}
+      onDismiss={handleDismiss}
     >
       {state && (
         <View style={styles.backdrop}>

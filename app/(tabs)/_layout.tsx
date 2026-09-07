@@ -49,6 +49,7 @@ export default function TabLayout() {
     onPhotoTipsDismissed,
     paywallVisible,
     dismissPaywall,
+    cancelProcessing,
   } = useAddClothing();
 
   return (
@@ -127,6 +128,7 @@ export default function TabLayout() {
         imageUri={processingImageUri}
         stepIndex={batchStep.index}
         stepCount={batchStep.count}
+        onCancel={cancelProcessing}
       />
 
       <ItemReveal items={revealItems} visible={revealItems.length > 0} onDone={finishReveal} />
