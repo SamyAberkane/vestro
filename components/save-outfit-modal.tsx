@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { KeyboardAvoidingView, Modal, Platform, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 
+import { AlertHost } from '@/components/alert-host';
 import { AppColors, VestroFonts } from '@/constants/theme';
 import { useI18n } from '@/i18n/context';
 import { useAppTheme } from '@/theme/context';
@@ -61,6 +62,7 @@ export function SaveOutfitModal({ visible, onConfirm, onCancel }: SaveOutfitModa
           </Pressable>
         </KeyboardAvoidingView>
       </Pressable>
+      <AlertHost />
     </Modal>
   );
 }

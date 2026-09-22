@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Modal, Pressable, StyleSheet, Text, View } from 'react-native';
 
+import { AlertHost } from '@/components/alert-host';
 import { AppColors, VestroFonts } from '@/constants/theme';
 import { useAppTheme } from '@/theme/context';
 
@@ -86,6 +87,7 @@ export function ConfirmModal({
           </Pressable>
         </Pressable>
       </Pressable>
+      <AlertHost />
     </Modal>
   );
 }

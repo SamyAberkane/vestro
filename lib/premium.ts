@@ -30,7 +30,7 @@ const CACHE_KEY = 'vestro.premium.cache';
 const IS_EXPO_GO = Constants.executionEnvironment === ExecutionEnvironment.StoreClient;
 const IAP_AVAILABLE = Platform.OS === 'ios' && !IS_EXPO_GO;
 
-let didInit = false;
+let initPromise: Promise<boolean> | null = null;
 let updateSub: EmitterSubscription | null = null;
 let errorSub: EmitterSubscription | null = null;
 
@@ -69,16 +69,26 @@ let pendingVerifications: PendingVerification[] = [];
 // purchaseMonthly() resolves once *this* fires — bridges StoreKit's
 // fire-and-forget requestSubscription() to a real "done, and Apple
 // confirmed it" promise instead of guessing with an arbitrary delay.
-function waitForVerifiedPurchase(timeoutMs = 30000): Promise<boolean> {
-  return new Promise((resolve, reject) => {
-    const entry: PendingVerification = { resolve, reject };
+// Registered before the purchase sheet opens (the listener can fire before
+// requestSubscription() returns), but the timeout is only armed afterwards
+// via `startTimeout` — the sheet itself (Apple ID sign-in, Face ID, sandbox
+// password on App Review's devices) can legitimately take well over 30s.
+function waitForVerifiedPurchase(): { promise: Promise<boolean>; startTimeout: (ms: number) => void } {
+  let entry!: PendingVerification;
+  const promise = new Promise<boolean>((resolve, reject) => {
+    entry = { resolve, reject };
     pendingVerifications.push(entry);
-
-    setTimeout(() => {
-      pendingVerifications = pendingVerifications.filter((pending) => pending !== entry);
-      reject(new Error('Délai dépassé en attendant la confirmation StoreKit'));
-    }, timeoutMs);
   });
+
+  function startTimeout(ms: number) {
+    setTimeout(() => {
+      if (!pendingVerifications.includes(entry)) return;
+      pendingVerifications = pendingVerifications.filter((pending) => pending !== entry);
+      entry.reject(new Error('Délai dépassé en attendant la confirmation StoreKit'));
+    }, ms);
+  }
+
+  return { promise, startTimeout };
 }
 
 function settlePendingVerifications(active: boolean): void {
@@ -93,17 +103,27 @@ function failPendingVerifications(error: unknown): void {
   pending.forEach((entry) => entry.reject(error));
 }
 
-/** Call once at app startup (see app/_layout.tsx). No-op on web/Android. */
-export async function initIAP(): Promise<void> {
-  if (!IAP_AVAILABLE || didInit) return;
-  didInit = true;
+/** Call at app startup (see app/_layout.tsx); purchase/restore also await it,
+ * so a slow or failed startup connection is retried instead of every StoreKit
+ * call after it failing. Resolves false when StoreKit is unreachable. No-op on
+ * web/Android. */
+export function initIAP(): Promise<boolean> {
+  if (!IAP_AVAILABLE) return Promise.resolve(false);
+  if (!initPromise) {
+    initPromise = connectIAP().then((connected) => {
+      if (!connected) initPromise = null;
+      return connected;
+    });
+  }
+  return initPromise;
+}
 
+async function connectIAP(): Promise<boolean> {
   try {
     await initConnection();
   } catch (error) {
     console.warn('[premium] initConnection a échoué', error);
-    didInit = false;
-    return;
+    return false;
   }
 
   updateSub = purchaseUpdatedListener(async (purchase) => {
@@ -131,6 +151,14 @@ export async function initIAP(): Promise<void> {
     console.warn('[premium] Erreur StoreKit', error);
     failPendingVerifications(error);
   });
+
+  return true;
+}
+
+async function ensureIAPConnected(): Promise<void> {
+  if (!(await initIAP())) {
+    throw new Error("Impossible de se connecter à l'App Store. Vérifie ta connexion et réessaie.");
+  }
 }
 
 export function teardownIAP(): void {
@@ -138,8 +166,8 @@ export function teardownIAP(): void {
   errorSub?.remove();
   updateSub = null;
   errorSub = null;
-  if (IAP_AVAILABLE && didInit) endConnection();
-  didInit = false;
+  if (IAP_AVAILABLE && initPromise) endConnection();
+  initPromise = null;
 }
 
 /** Server-verified only: reads the entitlement row that `verify-purchase`
@@ -184,6 +212,8 @@ export async function purchaseMonthly(): Promise<void> {
     return;
   }
 
+  await ensureIAPConnected();
+
   const subscriptions = await getSubscriptions({ skus: [MONTHLY_SKU] });
   if (subscriptions.length === 0) {
     throw new Error(
@@ -192,8 +222,18 @@ export async function purchaseMonthly(): Promise<void> {
   }
 
   const verified = waitForVerifiedPurchase();
-  await requestSubscription({ sku: MONTHLY_SKU });
-  const active = await verified;
+  try {
+    await requestSubscription({ sku: MONTHLY_SKU });
+  } catch (error) {
+    // Cancel/failure: the error listener already rejected `verified` too —
+    // swallow that duplicate so it isn't reported as an unhandled rejection.
+    verified.promise.catch(() => {});
+    throw error;
+  }
+  // The sheet is closed and Apple has the payment — what's left is
+  // finishTransaction + our server's call to Apple, which is quick.
+  verified.startTimeout(60000);
+  const active = await verified.promise;
 
   if (!active) {
     throw new Error("La vérification de l'abonnement a échoué côté serveur");
@@ -204,6 +244,8 @@ export async function restorePurchases(): Promise<boolean> {
   if (!IAP_AVAILABLE) {
     return (await AsyncStorage.getItem(SIMULATED_KEY)) === 'true';
   }
+
+  await ensureIAPConnected();
 
   const purchases = await getAvailablePurchases();
   const purchase = purchases.find((candidate) => candidate.productId === MONTHLY_SKU);
@@ -219,6 +261,22 @@ export async function restorePurchases(): Promise<boolean> {
  * in iOS Settings — see openManageSubscriptions() in paywall-modal.tsx. */
 export async function setSimulatedPremium(active: boolean): Promise<void> {
   await AsyncStorage.setItem(SIMULATED_KEY, active ? 'true' : 'false');
+}
+
+/** The monthly plan's price as the App Store shows it in the user's own
+ * storefront and currency (e.g. "6,99 €"), or null when StoreKit can't be
+ * reached — callers then fall back to the static price in the translations. */
+export async function getMonthlyLocalizedPrice(): Promise<string | null> {
+  if (!IAP_AVAILABLE) return null;
+
+  try {
+    await ensureIAPConnected();
+    const [subscription] = await getSubscriptions({ skus: [MONTHLY_SKU] });
+    return subscription && 'localizedPrice' in subscription ? subscription.localizedPrice : null;
+  } catch (error) {
+    console.warn('[premium] lecture du prix StoreKit a échoué', error);
+    return null;
+  }
 }
 
 export const isRealIAPAvailable = IAP_AVAILABLE;

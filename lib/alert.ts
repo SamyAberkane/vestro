@@ -14,16 +14,29 @@ export type AlertState = {
 
 type Listener = (state: AlertState | null) => void;
 
-const listeners = new Set<Listener>();
+// One entry per mounted AlertHost, in mount order. Only the LAST one renders:
+// on iOS a React Native <Modal> presents from its own host's view controller,
+// and one that is already presenting something (e.g. the paywall <Modal>)
+// silently refuses to present a second — so an alert raised while a <Modal>
+// is open, drawn by the root host, never appeared at all (the paywall's
+// subscribe error looked like "the button does nothing" to App Review).
+// Every <Modal> that can be open while alert() fires mounts its own
+// AlertHost inside its content, which then takes over as the topmost host.
+const hosts: Listener[] = [];
 let currentState: AlertState | null = null;
 
 function notify() {
-  listeners.forEach((listener) => listener(currentState));
+  hosts.forEach((host, index) => host(index === hosts.length - 1 ? currentState : null));
 }
 
 export function subscribeToAlert(listener: Listener): () => void {
-  listeners.add(listener);
-  return () => listeners.delete(listener);
+  hosts.push(listener);
+  notify();
+  return () => {
+    const index = hosts.indexOf(listener);
+    if (index !== -1) hosts.splice(index, 1);
+    notify();
+  };
 }
 
 /**

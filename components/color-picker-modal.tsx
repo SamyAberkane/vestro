@@ -1,6 +1,7 @@
 import { useMemo } from 'react';
 import { Modal, Pressable, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 
+import { AlertHost } from '@/components/alert-host';
 import { AppColors, VestroFonts, VestroPalette } from '@/constants/theme';
 import { useI18n } from '@/i18n/context';
 import { useAppTheme } from '@/theme/context';
@@ -53,6 +54,7 @@ export function ColorPickerModal({
           </TouchableOpacity>
         </Pressable>
       </Pressable>
+      <AlertHost />
     </Modal>
   );
 }

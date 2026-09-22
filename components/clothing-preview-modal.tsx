@@ -10,6 +10,7 @@ import Animated, {
 } from 'react-native-reanimated';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
+import { AlertHost } from '@/components/alert-host';
 import { AppColors, VestroFonts } from '@/constants/theme';
 import { useI18n } from '@/i18n/context';
 import { StickerImage } from '@/components/sticker-image';
@@ -106,6 +107,7 @@ export function ClothingPreviewModal({ item, onClose, onEdit }: ClothingPreviewM
           </View>
         </SafeAreaView>
       </Animated.View>
+      <AlertHost />
     </Modal>
   );
 }

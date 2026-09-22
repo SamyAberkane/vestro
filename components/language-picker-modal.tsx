@@ -1,6 +1,7 @@
 import { useMemo } from 'react';
 import { Modal, Pressable, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 
+import { AlertHost } from '@/components/alert-host';
 import { AppColors, VestroFonts } from '@/constants/theme';
 import { useI18n } from '@/i18n/context';
 import { LANGUAGES } from '@/i18n/translations';
@@ -43,6 +44,7 @@ export function LanguagePickerModal({ visible, onClose }: LanguagePickerModalPro
           </View>
         </Pressable>
       </Pressable>
+      <AlertHost />
     </Modal>
   );
 }

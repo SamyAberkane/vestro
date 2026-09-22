@@ -1,5 +1,5 @@
 import { Ionicons } from '@expo/vector-icons';
-import { router } from 'expo-router';
+import { openBrowserAsync } from 'expo-web-browser';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
@@ -17,11 +17,13 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import { AlertHost } from '@/components/alert-host';
 import { AppColors, VestroFonts } from '@/constants/theme';
 import { useI18n } from '@/i18n/context';
 import { alert } from '@/lib/alert';
 import {
   getIsPremium,
+  getMonthlyLocalizedPrice,
   isRealIAPAvailable,
   purchaseMonthly,
   restorePurchases,
@@ -44,6 +46,13 @@ type PaywallModalProps = {
 };
 
 const MANAGE_SUBSCRIPTIONS_URL = 'https://apps.apple.com/account/subscriptions';
+// Opened in an in-app browser, not pushed as the app's own /legal routes:
+// those are native stack modals, which iOS presents *underneath* this
+// <Modal> — the links looked dead to App Review (Guideline 3.1.2). The EULA
+// is Apple's standard one, matching the "Contrat de licence" setting in App
+// Store Connect; the privacy URL is the one declared there too.
+const TERMS_OF_USE_URL = 'https://www.apple.com/legal/internet-services/itunes/dev/stdeula/';
+const PRIVACY_POLICY_URL = 'https://samyaberkane.github.io/urlvestro/';
 
 const SCREEN_WIDTH = Dimensions.get('window').width;
 const CARD_WIDTH = Math.round(SCREEN_WIDTH * 0.72);
@@ -143,12 +152,17 @@ export function PaywallModal({
   const [remainingCredits, setRemainingCredits] = useState<number | null>(null);
   const [isProcessing, setIsProcessing] = useState(false);
   const [isRestoring, setIsRestoring] = useState(false);
+  const [storePrice, setStorePrice] = useState<string | null>(null);
+  const price = storePrice ?? t('premium.defaultPrice');
 
   useEffect(() => {
     if (!visible) return;
     getIsPremium().then((active) => {
       setIsPremium(active);
       if (active) getRemainingPhotoQuota().then(setRemainingCredits);
+    });
+    getMonthlyLocalizedPrice().then((localized) => {
+      if (localized) setStorePrice(localized);
     });
   }, [visible]);
 
@@ -262,7 +276,8 @@ export function PaywallModal({
           ) : (
             <>
               <View style={styles.priceBlock}>
-                <Text style={styles.price}>{t('premium.price')}</Text>
+                <Text style={styles.planName}>{t('premium.planName')}</Text>
+                <Text style={styles.price}>{t('premium.price', { price })}</Text>
                 <Text style={styles.billingNote}>{t('premium.billingNote')}</Text>
               </View>
 
@@ -270,7 +285,7 @@ export function PaywallModal({
                 {isProcessing ? (
                   <ActivityIndicator color={VestroColors.buttonText} />
                 ) : (
-                  <Text style={styles.ctaText}>{t('premium.cta')}</Text>
+                  <Text style={styles.ctaText}>{t('premium.cta', { price })}</Text>
                 )}
               </TouchableOpacity>
 
@@ -285,16 +300,17 @@ export function PaywallModal({
                   <Text style={styles.restoreText}>{t('premium.restoreCta')}</Text>
                 )}
               </TouchableOpacity>
+              <Text style={styles.autoRenewNote}>{t('premium.autoRenewNote', { price })}</Text>
             </>
           )}
 
           <View style={styles.legalRow}>
-            <TouchableOpacity onPress={() => router.push('/legal/privacy')}>
+            <TouchableOpacity onPress={() => openBrowserAsync(PRIVACY_POLICY_URL)} hitSlop={8}>
               <Text style={styles.legalLink}>{t('legal.privacyLink')}</Text>
             </TouchableOpacity>
             <Text style={styles.legalSeparator}>·</Text>
-            <TouchableOpacity onPress={() => router.push('/legal/terms')}>
-              <Text style={styles.legalLink}>{t('legal.termsLink')}</Text>
+            <TouchableOpacity onPress={() => openBrowserAsync(TERMS_OF_USE_URL)} hitSlop={8}>
+              <Text style={styles.legalLink}>{t('legal.eulaLink')}</Text>
             </TouchableOpacity>
           </View>
 
@@ -311,6 +327,7 @@ export function PaywallModal({
           )}
         </ScrollView>
       </View>
+      <AlertHost />
     </Modal>
   );
 }
@@ -435,6 +452,15 @@ const createStyles = (VestroColors: AppColors) => StyleSheet.create({
     paddingHorizontal: CAROUSEL_PADDING,
     alignItems: 'center',
   },
+  planName: {
+    marginBottom: 4,
+    fontFamily: VestroFonts.sansSemiBold,
+    fontSize: 12,
+    letterSpacing: 1,
+    textTransform: 'uppercase',
+    color: VestroColors.muted,
+    textAlign: 'center',
+  },
   price: {
     fontFamily: VestroFonts.serifSemiBoldItalic,
     fontSize: 22,
@@ -481,6 +507,15 @@ const createStyles = (VestroColors: AppColors) => StyleSheet.create({
     color: VestroColors.muted,
     textDecorationLine: 'underline',
   },
+  autoRenewNote: {
+    marginTop: 16,
+    paddingHorizontal: CAROUSEL_PADDING,
+    fontFamily: VestroFonts.sans,
+    fontSize: 10,
+    lineHeight: 14,
+    color: VestroColors.muted,
+    textAlign: 'center',
+  },
   legalRow: {
     marginTop: 24,
     flexDirection: 'row',
@@ -490,7 +525,7 @@ const createStyles = (VestroColors: AppColors) => StyleSheet.create({
   },
   legalLink: {
     fontFamily: VestroFonts.sans,
-    fontSize: 10,
+    fontSize: 12,
     color: VestroColors.muted,
     textDecorationLine: 'underline',
   },

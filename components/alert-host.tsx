@@ -9,9 +9,10 @@ const DESTRUCTIVE_RED = '#DC2626';
 
 /**
  * Renders whatever `alert()` (lib/alert.ts) last requested, themed like the
- * rest of Vestro instead of the OS's own grey system dialog. Mounted once in
- * the root layout — every screen just calls `alert(...)`, same signature as
- * React Native's own `Alert.alert`, and this is what actually draws it.
+ * rest of Vestro instead of the OS's own grey system dialog. Mounted in the
+ * root layout, and again inside every React Native <Modal> — only the most
+ * recently mounted host draws, so the alert always lands above whatever
+ * <Modal> is currently open (see lib/alert.ts for why that's needed).
  */
 export function AlertHost() {
   const [state, setState] = useState<AlertState | null>(null);
@@ -33,8 +34,11 @@ export function AlertHost() {
   useEffect(
     () =>
       subscribeToAlert((next) => {
-        setState(next);
-        if (next) setIsOpen(true);
+        // null also means "another, higher AlertHost took over" (see
+        // lib/alert.ts) — close without clearing `state` so the fade-out
+        // still has something to draw.
+        if (next) setState(next);
+        setIsOpen(Boolean(next));
       }),
     []
   );

@@ -12,6 +12,7 @@ import {
   View,
 } from 'react-native';
 
+import { AlertHost } from '@/components/alert-host';
 import { StickerImage } from '@/components/sticker-image';
 import { AppColors, VestroFonts } from '@/constants/theme';
 import { useI18n } from '@/i18n/context';
@@ -267,6 +268,7 @@ export function ClothingOptionsSheet({
           </Pressable>
         </KeyboardAvoidingView>
       </Pressable>
+      <AlertHost />
     </Modal>
   );
 }
