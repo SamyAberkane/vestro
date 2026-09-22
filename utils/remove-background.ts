@@ -153,14 +153,15 @@ export function splitDataUri(dataUri: string): { mimeType: string; base64: strin
   return { mimeType: match[1], base64: match[2] };
 }
 
-// The backdrop Gemini is asked to draw (see BACKGROUND_HEX in the
-// edit-clothing-photo edge function) is a synthetic, fully-saturated
-// chroma-key magenta specifically because no real garment or accessory is
-// ever legitimately that color — so unlike the old plain-white backdrop,
-// there's no meaningful risk in testing every pixel in the image directly
-// against the sampled background color, tolerance included for Gemini's own
-// rendering drift (it never returns a pixel-perfect hex match, and the fill
-// is rarely perfectly flat).
+// The backdrop Gemini is asked to draw is a synthetic, fully-saturated
+// chroma-key color — magenta by default, or green when the edge function
+// measured that the garment itself is close to magenta (a pink or purple
+// item; see BackgroundKey in the edit-clothing-photo edge function). It tells
+// us which one it used via `backgroundHex`, so the garment is always far from
+// the key being cut against — and unlike the old plain-white backdrop, there's
+// no meaningful risk in testing every pixel in the image directly against it,
+// tolerance included for Gemini's own rendering drift (it never returns a
+// pixel-perfect hex match, and the fill is rarely perfectly flat).
 //
 // This used to instead be a flood-fill that only grew outward from the
 // image's outer border, because back when the backdrop was white, a
@@ -177,11 +178,10 @@ export function splitDataUri(dataUri: string): { mimeType: string; base64: strin
 // handle loop, and a strip near its base, stayed solid, glaring magenta
 // because the flood fill simply never visited them — a defect that existed
 // before the backdrop became magenta too, just invisible against white.
-// Comparing every pixel directly against the sampled background color has no
-// such blind spot, and magenta being nothing like a real fabric color means
-// it doesn't need one: real garment colors sit far enough away (a black item
-// is ~360 units away in this space, white ~255, a warm tan ~220) that this
-// tolerance can be generous without ever mistaking one for background.
+// Comparing every pixel directly against the key color has no such blind
+// spot, and since the server only ever keeps a key the garment is measurably
+// far from, this tolerance can be generous without mistaking garment for
+// background.
 const BACKGROUND_COLOR_TOLERANCE = 80;
 
 // The flat per-pixel test above catches solid background but not the thin
@@ -218,11 +218,16 @@ function pixelRgb(rgba: Uint8Array, pixelIndex: number): Rgb {
   return { r: rgba[offset], g: rgba[offset + 1], b: rgba[offset + 2] };
 }
 
-// Shared by keyOutBackground (fresh redraws, background sampled from the
-// border) and recutStoredSticker (already-cut stickers, background is the
-// known canonical magenta) — see EDGE_ERODE_* comment above for why this is
-// two passes rather than one.
-function keyOutBackgroundCore(rgba: Uint8Array, width: number, height: number, background: Rgb): number {
+// Fresh redraws use the full two-pass cut (see EDGE_ERODE_* above for why);
+// recutStoredSticker passes `{ tolerance: RECUT_FLAT_TOLERANCE, erode: false }`
+// instead — see its own comment.
+function keyOutBackgroundCore(
+  rgba: Uint8Array,
+  width: number,
+  height: number,
+  background: Rgb,
+  { tolerance = BACKGROUND_COLOR_TOLERANCE, erode = true }: { tolerance?: number; erode?: boolean } = {}
+): number {
   const size = width * height;
   const settled = new Uint8Array(size);
   const hopOf = new Uint8Array(size);
@@ -232,7 +237,7 @@ function keyOutBackgroundCore(rgba: Uint8Array, width: number, height: number, b
 
   for (let pixelIndex = 0; pixelIndex < size; pixelIndex++) {
     const alreadyTransparent = rgba[pixelIndex * 4 + 3] === 0;
-    if (alreadyTransparent || withinTolerance(rgba, pixelIndex, background, BACKGROUND_COLOR_TOLERANCE)) {
+    if (alreadyTransparent || withinTolerance(rgba, pixelIndex, background, tolerance)) {
       if (!alreadyTransparent) {
         rgba[pixelIndex * 4 + 3] = 0;
         cleared++;
@@ -242,7 +247,7 @@ function keyOutBackgroundCore(rgba: Uint8Array, width: number, height: number, b
     }
   }
 
-  while (head < queue.length) {
+  while (erode && head < queue.length) {
     const pixelIndex = queue[head];
     const hops = hopOf[pixelIndex];
     head++;
@@ -278,24 +283,29 @@ function keyOutBackgroundCore(rgba: Uint8Array, width: number, height: number, b
   return cleared;
 }
 
-// Used to compare against the known, fixed magenta value (CANONICAL_BACKGROUND
-// below) instead of sampling the image's own border. A border sample used to
-// be the reference here, on the theory that the border is "overwhelmingly
-// background pixels" — but a large or off-center item (a dress, a bag shot
-// close-up) can have the item itself running along a meaningful stretch of
-// the border, skewing the sampled median away from true magenta and leaving
-// large swaths of real background uncleared. There's no such risk comparing
-// against the fixed value directly: Gemini was explicitly told to render
-// this exact hex, and the generous tolerance already accounts for its normal
-// per-pixel rendering drift.
-function keyOutBackground(rgba: Uint8Array, width: number, height: number): number {
-  return keyOutBackgroundCore(rgba, width, height, CANONICAL_BACKGROUND);
+// The exact key colors the edge function can ask Gemini to draw (see
+// BackgroundKey server-side). Cut against the known hex rather than a sample
+// of the image's own border: a large or off-center item (a dress, a bag shot
+// close-up) can run along a meaningful stretch of the border, skewing a
+// sampled median away from the real key and leaving large swaths of
+// background uncleared.
+const MAGENTA_BACKGROUND: Rgb = { r: 255, g: 0, b: 255 };
+const GREEN_BACKGROUND: Rgb = { r: 0, g: 255, b: 0 };
+const SUPPORTED_BACKGROUND_KEYS = ['magenta', 'green'];
+
+function parseBackgroundHex(hex: string | undefined): Rgb {
+  const match = /^#?([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(hex ?? '');
+  if (!match) return MAGENTA_BACKGROUND;
+  return { r: parseInt(match[1], 16), g: parseInt(match[2], 16), b: parseInt(match[3], 16) };
 }
 
-// The exact magenta Gemini is asked to draw (see BACKGROUND_HEX server-side)
-// — the fixed reference both keyOutBackground and recutStoredSticker below
-// compare against, rather than sampling the image's own border/edge.
-const CANONICAL_BACKGROUND: Rgb = { r: 255, g: 0, b: 255 };
+// Only clears pixels that are unmistakably flat key color — no edge erosion,
+// and a far tighter tolerance than a fresh cut. This pass runs unattended
+// over every stored sticker, including ones cut against green because the
+// garment is pink: the fresh-cut tolerance around magenta would eat straight
+// into such a garment (pink sits ~80 from magenta per channel), whereas
+// trapped leftover backdrop is flat key color, well within this.
+const RECUT_FLAT_TOLERANCE = 40;
 
 // A sticker cut by the old border-seeded flood fill (before keyOutBackground
 // replaced it — see its own comment) can have solid, uncut magenta trapped
@@ -304,7 +314,7 @@ const CANONICAL_BACKGROUND: Rgb = { r: 255, g: 0, b: 255 };
 // generated* redraw is unaffected by which cutout algorithm ran, no new
 // Gemini call is needed to fix it — this just re-keys the same image with
 // the current algorithm, comparing every still-opaque pixel against the
-// known magenta rather than a border sample. Returns `cleared: 0` and the
+// known key colors rather than a border sample. Returns `cleared: 0` and the
 // original image untouched when there's nothing left to clean up, so a
 // caller can skip re-uploading a sticker that was already fine.
 export async function recutStoredSticker(
@@ -316,7 +326,12 @@ export async function recutStoredSticker(
   const decoded = UPNG.decode(toByteArray(base64).buffer);
   const rgba = new Uint8Array(UPNG.toRGBA8(decoded)[0]);
 
-  const cleared = keyOutBackgroundCore(rgba, decoded.width, decoded.height, CANONICAL_BACKGROUND);
+  const cleared = [MAGENTA_BACKGROUND, GREEN_BACKGROUND].reduce(
+    (total, key) =>
+      total +
+      keyOutBackgroundCore(rgba, decoded.width, decoded.height, key, { tolerance: RECUT_FLAT_TOLERANCE, erode: false }),
+    0
+  );
   if (cleared === 0) return { image: dataUri, cleared: 0 };
 
   const encoded = UPNG.encode([rgba.buffer], decoded.width, decoded.height, 0);
@@ -384,7 +399,7 @@ export async function resizeStoredImageIfNeeded(
   }
 }
 
-async function makeBackgroundTransparent(rawImageDataUri: string, tag: string): Promise<string> {
+async function makeBackgroundTransparent(rawImageDataUri: string, background: Rgb, tag: string): Promise<string> {
   try {
     const pngDataUri = await ensurePngDataUri(rawImageDataUri, tag);
     const { base64 } = splitDataUri(pngDataUri);
@@ -393,7 +408,7 @@ async function makeBackgroundTransparent(rawImageDataUri: string, tag: string): 
     const decoded = UPNG.decode(pngBytes.buffer);
     const rgba = new Uint8Array(UPNG.toRGBA8(decoded)[0]);
 
-    const cleared = keyOutBackground(rgba, decoded.width, decoded.height);
+    const cleared = keyOutBackgroundCore(rgba, decoded.width, decoded.height, background);
 
     const encoded = UPNG.encode([rgba.buffer], decoded.width, decoded.height, 0);
     const outBase64 = fromByteArray(new Uint8Array(encoded));
@@ -410,7 +425,14 @@ async function makeBackgroundTransparent(rawImageDataUri: string, tag: string): 
 }
 
 type EditClothingPhotoResponse =
-  | { status: 'success'; image?: { mimeType: string; base64: string }; text?: string; message: string }
+  | {
+      status: 'success';
+      image?: { mimeType: string; base64: string };
+      /** The chroma-key color the item was drawn on — absent from older servers, which always used magenta. */
+      backgroundHex?: string;
+      text?: string;
+      message: string;
+    }
   | { status: 'error'; message: string; code?: string };
 
 type GeminiStickerOutcome = {
@@ -449,7 +471,10 @@ async function callEditClothingPhoto(
 
     const { data, error } = await supabase.functions.invoke<EditClothingPhotoResponse>(
       'edit-clothing-photo',
-      { body: { language, mimeType, base64 }, timeout: EDGE_FUNCTION_TIMEOUT_MS }
+      {
+        body: { language, mimeType, base64, backgroundKeys: SUPPORTED_BACKGROUND_KEYS },
+        timeout: EDGE_FUNCTION_TIMEOUT_MS,
+      }
     );
 
     if (error) {
@@ -470,7 +495,8 @@ async function callEditClothingPhoto(
     console.log(`${tag} image reçue: type=${data.image.mimeType}, ~${resultBytes} octets`);
 
     const rawImage = `data:${data.image.mimeType};base64,${data.image.base64}`;
-    const image = await makeBackgroundTransparent(rawImage, tag);
+    console.log(`${tag} fond de détourage: ${data.backgroundHex ?? '#FF00FF (par défaut)'}`);
+    const image = await makeBackgroundTransparent(rawImage, parseBackgroundHex(data.backgroundHex), tag);
 
     return { image, text: data.text, status: 'success', message: `OK — ~${resultBytes} octets reçus` };
   } catch (error) {

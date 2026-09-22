@@ -13,8 +13,11 @@
 // (unwrinkled, symmetrical, forward-facing), the way clothing looks in
 // reference apps like keyloush, even when the source photo shows it worn or
 // crumpled. The client (utils/remove-background.ts) then strips the flat
-// white background this produces down to real transparency.
+// chroma-key backdrop this produces (see BackgroundKey below) down to real
+// transparency.
 import { createClient } from 'npm:@supabase/supabase-js@2';
+import jpeg from 'npm:jpeg-js@0.4.4';
+import UPNG from 'npm:upng-js@2.1.0';
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL')!;
 const SUPABASE_ANON_KEY = Deno.env.get('SUPABASE_ANON_KEY')!;
@@ -49,18 +52,97 @@ const CORS_HEADERS = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 };
 
-// Chroma-key magenta, not white: a light or white garment (a cream sweater, a
+// Chroma-key backdrop, not white: a light or white garment (a cream sweater, a
 // white sneaker) sits close enough to white in RGB terms that the client's
 // color-distance cutout (utils/remove-background.ts) can't always tell garment
 // from background, and testers saw exactly that — pale patches eaten out of
 // the middle of a garment, worse on anything with a lot of folds (a full-body
-// dress). No real clothing is ever this exact saturated magenta, so keying on
-// this color instead removes the ambiguity at the source rather than trying
-// to tune the cutout's tolerance around it.
-const BACKGROUND_HEX = '#FF00FF';
-const BACKGROUND_RGB = 'RGB(255,0,255)';
+// dress).
+//
+// But no single key color is safe for every garment: magenta was chosen as
+// "a color no real fabric is", and then a hot-pink t-shirt came back with its
+// edges and hem eaten away, because pink sits inside the cutout's tolerance
+// around magenta. So the key is picked per garment instead: the redraw is
+// done on magenta first, measureKeyCollision() below checks the actual
+// rendered pixels for garment areas the client would mistake for that
+// backdrop, and if there are any, the item is redrawn on chroma green — the
+// color farthest from pink/purple/magenta. The key actually used is returned
+// to the client, which cuts against exactly that color.
+type BackgroundKey = { id: 'magenta' | 'green'; hex: string; label: string; rgb: [number, number, number] };
 
-const REDRAW_INSTRUCTION =
+const MAGENTA_KEY: BackgroundKey = { id: 'magenta', hex: '#FF00FF', label: 'magenta', rgb: [255, 0, 255] };
+const GREEN_KEY: BackgroundKey = { id: 'green', hex: '#00FF00', label: 'green', rgb: [0, 255, 0] };
+
+// Mirrors the client's cutout (utils/remove-background.ts): a pixel within
+// KEY_FLAT_TOLERANCE of the key on every channel is plain backdrop; one
+// within KEY_REACH_TOLERANCE is close enough that the client's cutout
+// (BACKGROUND_COLOR_TOLERANCE 80, EDGE_ERODE_MAX_DRIFT 130 there, plus
+// margin) could remove it. Such "reachable" pixels are only legitimate as the
+// thin anti-aliased ring where backdrop meets garment — any further than
+// KEY_FRINGE_WIDTH px from real backdrop are garment the cutout would eat.
+const KEY_FLAT_TOLERANCE = 40;
+const KEY_REACH_TOLERANCE = 140;
+const KEY_FRINGE_WIDTH = 4;
+// Share of the image's pixels that may be at risk before switching key —
+// ~500 px on a 1024² render, so even a small pink logo on an otherwise
+// neutral garment switches rather than coming back with a hole in it. A
+// false positive only costs one extra redraw; green is safe for anything
+// that isn't itself green, and the lower-collision render always wins.
+const KEY_COLLISION_MAX_SHARE = 0.0005;
+
+function decodeToRgba(image: { mimeType: string; base64: string }) {
+  const bytes = Uint8Array.from(atob(image.base64), (c) => c.charCodeAt(0));
+  if (image.mimeType === 'image/png') {
+    const decoded = UPNG.decode(bytes.buffer);
+    return { rgba: new Uint8Array(UPNG.toRGBA8(decoded)[0]), width: decoded.width, height: decoded.height };
+  }
+  const decoded = jpeg.decode(bytes, { useTArray: true, formatAsRGBA: true });
+  return { rgba: decoded.data as Uint8Array, width: decoded.width, height: decoded.height };
+}
+
+/** Share of pixels, away from the backdrop/garment boundary, that the client
+ * cutout could mistake for `key` — i.e. garment it would eat. */
+function measureKeyCollision(image: { mimeType: string; base64: string }, key: BackgroundKey): number {
+  const { rgba, width, height } = decodeToRgba(image);
+  const size = width * height;
+  const [kr, kg, kb] = key.rgb;
+  const diff = (i: number) =>
+    Math.max(Math.abs(rgba[i * 4] - kr), Math.abs(rgba[i * 4 + 1] - kg), Math.abs(rgba[i * 4 + 2] - kb));
+
+  // BFS distance (in px, capped) from the nearest flat backdrop pixel.
+  const distance = new Uint8Array(size).fill(255);
+  const queue: number[] = [];
+  for (let i = 0; i < size; i++) {
+    if (diff(i) <= KEY_FLAT_TOLERANCE) {
+      distance[i] = 0;
+      queue.push(i);
+    }
+  }
+  for (let head = 0; head < queue.length; head++) {
+    const i = queue[head];
+    const next = distance[i] + 1;
+    if (next > KEY_FRINGE_WIDTH) continue;
+    const x = i % width;
+    const neighbors = [x > 0 ? i - 1 : -1, x < width - 1 ? i + 1 : -1, i - width, i + width];
+    for (const n of neighbors) {
+      if (n < 0 || n >= size || distance[n] <= next) continue;
+      distance[n] = next;
+      queue.push(n);
+    }
+  }
+
+  let atRisk = 0;
+  for (let i = 0; i < size; i++) {
+    const d = diff(i);
+    if (d > KEY_FLAT_TOLERANCE && d <= KEY_REACH_TOLERANCE && distance[i] > KEY_FRINGE_WIDTH) atRisk++;
+  }
+  return atRisk / size;
+}
+
+function redrawInstruction(key: BackgroundKey): string {
+  const BACKGROUND_HEX = key.hex;
+  const BACKGROUND_RGB = `RGB(${key.rgb.join(',')})`;
+  return (
   'This is not a photo-editing or cutout task — do not try to trace, segment, or reconstruct the ' +
   'exact contour visible in the source photo at all. The photo just shows a single clothing item ' +
   'or accessory, possibly worn on a person, wrinkled, folded, cropped, partially hidden behind a ' +
@@ -108,19 +190,21 @@ const REDRAW_INSTRUCTION =
   'a garment that is itself white or very pale: render its highlights and lightest folds as a ' +
   'real, slightly-shaded off-white fabric tone, never as the flat background color itself, so the ' +
   'two stay visually distinct even at their palest. Center the item on a background that is a ' +
-  'completely flat, solid fill of a bright, fully-saturated chroma-key magenta — the kind used in ' +
+  `completely flat, solid fill of a bright, fully-saturated chroma-key ${key.label} — the kind used in ` +
   `film/photo compositing, not a color that occurs on real fabric — hex code ${BACKGROUND_HEX}, ` +
   `${BACKGROUND_RGB}, exactly like a solid color swatch. Absolutely no gradient, no vignette, no ` +
   'shadow, no light falloff, and no blending toward white, gray, or any of the garment\'s own ' +
   'colors anywhere in the background — every single background pixel must be that exact flat ' +
-  'magenta, with a hard, fully-opaque cutoff where the garment begins: never a soft, fading, ' +
+  `${key.label}, with a hard, fully-opaque cutoff where the garment begins: never a soft, fading, ` +
   'feathered, or semi-transparent transition, even along a naturally sheer or wispy edge (a ' +
   'chiffon ruffle, tulle, loose threads, fringe) — draw that edge crisp and fully opaque anyway, ' +
   'exactly on the true silhouette line, the same way a die-cut sticker would be. This is a goal to ' +
   'aim for, not a reason to refuse the item: even on a pale, voluminous, or structurally complex ' +
-  'garment where a perfectly crisp magenta edge is hard to guarantee, still render your best ' +
+  'garment where a perfectly crisp edge is hard to guarantee, still render your best ' +
   'silhouette and best attempt at a clean edge — an imperfect edge is always better than not ' +
-  'attempting the item at all.';
+  'attempting the item at all.'
+  );
+}
 
 const VestroCategories = [
   'Hauts',
@@ -236,7 +320,7 @@ function classificationInstruction(language: Language): string {
     'a photo already shot on white/light like a commercial product photo) — redraw its silhouette ' +
     'and shading as best you can instead of rejecting it; the item is pale, white, or has a lot of ' +
     'volume, folds or drape (a full dress, anything structurally complex) that might make a ' +
-    'perfectly crisp edge against the flat magenta backdrop hard to guarantee — do your best ' +
+    'perfectly crisp edge against the flat backdrop hard to guarantee — do your best ' +
     'approximate redraw and silhouette anyway, an imperfect edge is never a reason to refuse; the ' +
     'item is shown as a matching pair or set the way it is normally sold or worn (e.g. two shoes, a ' +
     'pair of gloves, a set of earrings) — that is one listing, not multiple items, so redraw one ' +
@@ -275,6 +359,10 @@ type RequestBody = {
   // Skips the (slow) image redraw and only asks Gemini to classify the photo
   // it's already shown — see buildClassifyOnlyPrompt.
   classifyOnly?: boolean;
+  // Backdrop keys this client can cut against. Builds from before
+  // per-garment keys existed don't send it and only understand magenta, so
+  // they must never be handed a green-backed image.
+  backgroundKeys?: string[];
 };
 
 function currentPeriodStart(): string {
@@ -505,8 +593,38 @@ Deno.serve(async (req) => {
     // combined into one TEXT+IMAGE request — see callGemini's own comment
     // for why that combination was unreliable. The redraw is the one that
     // matters for billing and for whether this counts as a usable result at
-    // all; classification is best-effort on top of it.
-    const imageResult = await callGemini(body.mimeType, body.base64, REDRAW_INSTRUCTION, ['IMAGE']);
+    // all; classification is best-effort on top of it, and runs in parallel
+    // so a possible second redraw (below) doesn't push past the client's
+    // timeout.
+    const classifyPromise = callGemini(
+      body.mimeType,
+      body.base64,
+      buildClassifyOnlyPrompt(body.language ?? 'fr'),
+      ['TEXT']
+    );
+
+    let key = MAGENTA_KEY;
+    let imageResult = await callGemini(body.mimeType, body.base64, redrawInstruction(key), ['IMAGE']);
+
+    if (imageResult.status === 'success' && imageResult.image && body.backgroundKeys?.includes(GREEN_KEY.id)) {
+      try {
+        const magentaCollision = measureKeyCollision(imageResult.image, MAGENTA_KEY);
+        if (magentaCollision > KEY_COLLISION_MAX_SHARE) {
+          console.log(`[edit-clothing-photo] garment collides with magenta (${magentaCollision}), redrawing on green`);
+          const greenResult = await callGemini(body.mimeType, body.base64, redrawInstruction(GREEN_KEY), ['IMAGE']);
+          if (greenResult.status === 'success' && greenResult.image) {
+            const greenCollision = measureKeyCollision(greenResult.image, GREEN_KEY);
+            if (greenCollision < magentaCollision) {
+              key = GREEN_KEY;
+              imageResult = greenResult;
+            }
+          }
+        }
+      } catch (error) {
+        // An undecodable image just means no key check — never a failure.
+        console.error('[edit-clothing-photo] key collision check failed', error);
+      }
+    }
 
     if (imageResult.status !== 'success' || !imageResult.image) {
       return new Response(JSON.stringify(imageResult), {
@@ -526,16 +644,12 @@ Deno.serve(async (req) => {
     // missing name/category (see analyzeClothingPhoto in
     // utils/remove-background.ts), so there's no need to fail the whole
     // request over this half.
-    const classifyResult = await callGemini(
-      body.mimeType,
-      body.base64,
-      buildClassifyOnlyPrompt(body.language ?? 'fr'),
-      ['TEXT']
-    );
+    const classifyResult = await classifyPromise;
 
     const result = {
       status: 'success' as const,
       image: imageResult.image,
+      backgroundHex: key.hex,
       text: classifyResult.status === 'success' ? classifyResult.text : undefined,
       message: 'OK',
     };
