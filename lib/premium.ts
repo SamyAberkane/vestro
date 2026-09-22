@@ -43,11 +43,21 @@ async function cachePremium(active: boolean): Promise<void> {
 // it — writes the server-side entitlement row that getIsPremium() below
 // actually trusts. Never treat a local StoreKit receipt as proof on its own.
 async function verifyPurchase(transactionId: string): Promise<boolean> {
+  return callVerifyPurchase({ transactionId });
+}
+
+// Asks verify-purchase to re-check the user's already-verified subscription
+// with Apple — see getIsPremium() for why an expired row isn't final.
+async function refreshSubscriptionStatus(): Promise<boolean> {
+  return callVerifyPurchase({ refresh: true });
+}
+
+async function callVerifyPurchase(body: { transactionId: string } | { refresh: true }): Promise<boolean> {
   const { data, error } = await supabase.functions.invoke<{
     isPremium: boolean;
     expiresAt: string | null;
     message?: string;
-  }>('verify-purchase', { body: { transactionId } });
+  }>('verify-purchase', { body });
 
   if (error) {
     // supabase-js's own error.message is just the generic "Edge Function
@@ -186,14 +196,29 @@ export async function getIsPremium(): Promise<boolean> {
 
     const { data, error } = await supabase
       .from('premium_entitlements')
-      .select('is_active, expires_at')
+      .select('is_active, expires_at, original_transaction_id')
       .eq('user_id', user.id)
       .maybeSingle();
 
     if (error) throw new Error(error.message);
 
-    const active =
+    let active =
       Boolean(data?.is_active) && (!data?.expires_at || new Date(data.expires_at) > new Date());
+
+    // The row only knows the expiry of the last transaction the server saw,
+    // but the subscription renews on its own (monthly; every few minutes in
+    // the sandbox App Review tests in) and StoreKit only reports renewals
+    // while the app happens to run. An expired row for someone who has
+    // subscribed is therefore re-checked with Apple before being believed —
+    // otherwise a renewed subscriber would hit the paywall, and the server's
+    // premium checks (RLS, edit-clothing-photo) would refuse their additions.
+    if (!active && data?.original_transaction_id) {
+      active = await refreshSubscriptionStatus().catch((refreshError) => {
+        console.warn('[premium] re-vérification de l’abonnement a échoué', refreshError);
+        return false;
+      });
+    }
+
     await cachePremium(active);
     return active;
   } catch (error) {

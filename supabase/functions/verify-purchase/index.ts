@@ -138,6 +138,51 @@ async function fetchTransactionInfo(transactionId: string, appleJwt: string): Pr
   );
 }
 
+type AppleLastTransaction = {
+  originalTransactionId: string;
+  // 1 active, 2 expired, 3 billing retry, 4 billing grace period, 5 revoked
+  status: number;
+  signedTransactionInfo: string;
+};
+
+// The entitlement row only knows the expiry of the transaction that was
+// last verified — but an auto-renewable subscription keeps producing new
+// transactions (every month in production, every few minutes in the
+// sandbox App Review uses), which the app only reports if StoreKit happens
+// to deliver them while it's running. So the source of truth is Apple's
+// current subscription status for the original transaction, which already
+// reflects every renewal (or cancellation / refund) since.
+async function fetchSubscriptionStatus(
+  originalTransactionId: string,
+  appleJwt: string
+): Promise<{ isActive: boolean; expiresAt: string | null } | null> {
+  const hosts = ['https://api.storekit.itunes.apple.com', 'https://api.storekit-sandbox.itunes.apple.com'];
+
+  for (const host of hosts) {
+    const response = await fetch(`${host}/inApps/v1/subscriptions/${originalTransactionId}`, {
+      headers: { Authorization: `Bearer ${appleJwt}` },
+    });
+    if (!response.ok) continue;
+
+    const body: { data?: { lastTransactions?: AppleLastTransaction[] }[] } = await response.json();
+    const last = (body.data ?? [])
+      .flatMap((group) => group.lastTransactions ?? [])
+      .find((entry) => entry.originalTransactionId === originalTransactionId);
+    if (!last) continue;
+
+    const [, payload] = last.signedTransactionInfo.split('.');
+    const info = base64urlDecodeToJson<AppleTransactionInfo>(payload);
+    if (info.bundleId !== APPLE_BUNDLE_ID || info.productId !== MONTHLY_SKU) return null;
+
+    // Billing retry (3) is deliberately not active: Apple hasn't collected
+    // payment and there's no grace period in effect.
+    const isActive = (last.status === 1 || last.status === 4) && !info.revocationDate;
+    return { isActive, expiresAt: info.expiresDate ? new Date(info.expiresDate).toISOString() : null };
+  }
+
+  return null;
+}
+
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') {
     return new Response('ok', { headers: CORS_HEADERS });
@@ -156,26 +201,56 @@ Deno.serve(async (req) => {
     } = await callerClient.auth.getUser();
     if (userError || !user) return json({ message: 'Non authentifié' }, 401);
 
-    const { transactionId } = await req.json();
-    if (!transactionId || typeof transactionId !== 'string') {
-      return json({ message: 'transactionId manquant' }, 400);
-    }
-
-    const appleJwt = await buildAppleJWT();
-    const info = await fetchTransactionInfo(transactionId, appleJwt);
-
-    if (info.bundleId !== APPLE_BUNDLE_ID || info.productId !== MONTHLY_SKU) {
-      return json({ message: 'Cette transaction ne correspond pas à cette app/produit' }, 400);
-    }
-
-    const isActive = !info.revocationDate && (!info.expiresDate || info.expiresDate > Date.now());
-    const expiresAt = info.expiresDate ? new Date(info.expiresDate).toISOString() : null;
-
+    const { transactionId, refresh } = await req.json();
     const adminClient = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
+    const appleJwt = await buildAppleJWT();
+
+    let originalTransactionId: string;
+    let isActive: boolean;
+    let expiresAt: string | null;
+
+    if (refresh === true) {
+      // Re-checks the caller's own, already-verified subscription with Apple
+      // — no client-supplied transaction involved, so nothing to trust.
+      const { data: row } = await adminClient
+        .from('premium_entitlements')
+        .select('original_transaction_id')
+        .eq('user_id', user.id)
+        .maybeSingle();
+      if (!row?.original_transaction_id) return json({ isPremium: false, expiresAt: null });
+
+      const status = await fetchSubscriptionStatus(row.original_transaction_id, appleJwt);
+      if (!status) return json({ message: 'Statut d’abonnement introuvable côté Apple' }, 502);
+      originalTransactionId = row.original_transaction_id;
+      ({ isActive, expiresAt } = status);
+    } else {
+      if (!transactionId || typeof transactionId !== 'string') {
+        return json({ message: 'transactionId manquant' }, 400);
+      }
+
+      const info = await fetchTransactionInfo(transactionId, appleJwt);
+      if (info.bundleId !== APPLE_BUNDLE_ID || info.productId !== MONTHLY_SKU) {
+        return json({ message: 'Cette transaction ne correspond pas à cette app/produit' }, 400);
+      }
+
+      originalTransactionId = info.originalTransactionId ?? info.transactionId;
+      // Prefer Apple's current status (covers renewals since this
+      // transaction); fall back to the transaction itself if unavailable.
+      const status = await fetchSubscriptionStatus(originalTransactionId, appleJwt).catch(() => null);
+      isActive = status
+        ? status.isActive
+        : !info.revocationDate && (!info.expiresDate || info.expiresDate > Date.now());
+      expiresAt = status
+        ? status.expiresAt
+        : info.expiresDate
+          ? new Date(info.expiresDate).toISOString()
+          : null;
+    }
+
     const { error: upsertError } = await adminClient.from('premium_entitlements').upsert({
       user_id: user.id,
       is_active: isActive,
-      original_transaction_id: info.originalTransactionId ?? info.transactionId,
+      original_transaction_id: originalTransactionId,
       expires_at: expiresAt,
       updated_at: new Date().toISOString(),
     });
