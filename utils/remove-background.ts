@@ -43,8 +43,12 @@ const OUTPUT_COMPRESS = 0.85;
 // reliable (see that file's comment on why the combined call kept dropping
 // the image), but the happy path can now take close to twice as long. This
 // was 45s; raised so a normal two-call round trip doesn't get cut off right
-// as it was about to succeed.
-const EDGE_FUNCTION_TIMEOUT_MS = 75000;
+// as it was about to succeed. Raised again to 130s when pink/purple
+// garments started getting a second, green-backdrop redraw (see
+// redrawWithBestKey server-side): that retry only starts when the first
+// redraw took under 40s, and a single redraw is capped at 45s, so the
+// worst case still lands well inside this.
+const EDGE_FUNCTION_TIMEOUT_MS = 130000;
 
 // Reasons a source photo can't produce a clean isolated sticker — surfaced to
 // the user (via i18n `photoIssue.<code>`) so a rejected photo comes with a
@@ -307,6 +311,166 @@ function parseBackgroundHex(hex: string | undefined): Rgb {
 // trapped leftover backdrop is flat key color, well within this.
 const RECUT_FLAT_TOLERANCE = 40;
 
+// The cut for a fresh redraw. It doesn't ask "is this pixel close to the
+// exact key color?" (keyOutBackgroundCore's question) but, like a real
+// chroma keyer, "how much do this pixel's key channels exceed its other
+// channels?" — keyDominance(). Backdrop scores high even where Gemini
+// shaded or noised it (inside a bag handle, in a corner), which a
+// distance-to-exact-color test misses and leaves as colored specks; a garment
+// scores near or below zero whatever its brightness, since the server only
+// keeps a key the garment doesn't lean toward (see measureKeyCollision
+// there). Measured on real redraws: garments at 0-25, backdrop at 150+, and
+// only the ~1% of edge blend pixels in between.
+//
+// Pixels between KEY_DOMINANCE_OPAQUE and KEY_DOMINANCE_CLEAR are those
+// blends: they get partial alpha, and their color is un-mixed back to the
+// garment color sampled just inside the edge, so no key tint survives (the
+// old visible magenta — then green — outline). Pixels at or below
+// KEY_DOMINANCE_OPAQUE keep their alpha; within EDGE_DESPILL_BAND px of the
+// cut, their faint remaining lean toward the key is stripped too — on a dark
+// garment even a small lean (a blend pixel just under the threshold) reads as
+// a colored glow. Further inside the garment, nothing is touched, so its own
+// colors stay exactly as drawn.
+const KEY_DOMINANCE_OPAQUE = 50;
+const KEY_DOMINANCE_CLEAR = 150;
+const UNMIX_SAMPLE_RADIUS = 3;
+const EDGE_DESPILL_BAND = 3;
+
+// Gemini also paints faint reflections of the backdrop onto the garment
+// itself, away from any edge (pink tinges in the nook where a tan leather
+// handle meets a bag, on magenta). Whether stripping that lean everywhere is
+// safe depends on the garment: for one whose own colors don't lean toward
+// the key at all (browns, blacks, beiges, navy... — the vast majority), any
+// lean is by definition reflected backdrop, so it's removed everywhere. A
+// garment that genuinely leans toward the key (a pale pink item that stayed
+// on magenta) keeps its interior colors untouched and only gets the edge
+// band above. "Genuinely leans" = more than GARMENT_LEAN_SHARE of its
+// opaque pixels score above GARMENT_LEAN_DOMINANCE.
+const GARMENT_LEAN_DOMINANCE = 15;
+const GARMENT_LEAN_SHARE = 0.05;
+
+function keyChannelsOf(background: Rgb): boolean[] {
+  return [background.r, background.g, background.b].map((value) => value >= 128);
+}
+
+function keyDominance(rgba: Uint8Array, offset: number, keyChannels: boolean[]): number {
+  let keyMin = 255;
+  let otherMax = 0;
+  for (let channel = 0; channel < 3; channel++) {
+    if (keyChannels[channel]) keyMin = Math.min(keyMin, rgba[offset + channel]);
+    else otherMax = Math.max(otherMax, rgba[offset + channel]);
+  }
+  return keyMin - otherMax;
+}
+
+function keyOutByDominance(rgba: Uint8Array, width: number, height: number, background: Rgb): number {
+  const keyChannels = keyChannelsOf(background);
+  const size = width * height;
+  const dominance = new Int16Array(size);
+  for (let pixelIndex = 0; pixelIndex < size; pixelIndex++) {
+    dominance[pixelIndex] = keyDominance(rgba, pixelIndex * 4, keyChannels);
+  }
+
+  // 1. Strip reflected key tint from the garment first — before step 2
+  // borrows garment colors from these pixels, or it would copy the tint
+  // straight back onto the edge.
+  let opaquePixels = 0;
+  let leaningPixels = 0;
+  for (let pixelIndex = 0; pixelIndex < size; pixelIndex++) {
+    const score = dominance[pixelIndex];
+    if (score > KEY_DOMINANCE_OPAQUE) continue;
+    opaquePixels++;
+    if (score > GARMENT_LEAN_DOMINANCE) leaningPixels++;
+  }
+  const garmentIsNeutral = opaquePixels > 0 && leaningPixels / opaquePixels <= GARMENT_LEAN_SHARE;
+
+  const edgeDistance = new Uint8Array(size).fill(255);
+  if (!garmentIsNeutral) {
+    const queue: number[] = [];
+    for (let pixelIndex = 0; pixelIndex < size; pixelIndex++) {
+      if (dominance[pixelIndex] > KEY_DOMINANCE_OPAQUE) {
+        edgeDistance[pixelIndex] = 0;
+        queue.push(pixelIndex);
+      }
+    }
+    for (let head = 0; head < queue.length; head++) {
+      const pixelIndex = queue[head];
+      const next = edgeDistance[pixelIndex] + 1;
+      if (next > EDGE_DESPILL_BAND) continue;
+      const x = pixelIndex % width;
+      const neighbors = [
+        x > 0 ? pixelIndex - 1 : -1,
+        x < width - 1 ? pixelIndex + 1 : -1,
+        pixelIndex - width,
+        pixelIndex + width,
+      ];
+      for (const neighbor of neighbors) {
+        if (neighbor < 0 || neighbor >= size || edgeDistance[neighbor] <= next) continue;
+        edgeDistance[neighbor] = next;
+        queue.push(neighbor);
+      }
+    }
+  }
+
+  for (let pixelIndex = 0; pixelIndex < size; pixelIndex++) {
+    const score = dominance[pixelIndex];
+    if (score <= 0 || score > KEY_DOMINANCE_OPAQUE) continue;
+    if (!garmentIsNeutral && edgeDistance[pixelIndex] > EDGE_DESPILL_BAND) continue;
+    const offset = pixelIndex * 4;
+    for (let channel = 0; channel < 3; channel++) {
+      if (keyChannels[channel]) rgba[offset + channel] -= score;
+    }
+  }
+
+  // 2. Key out the backdrop, and un-mix the blend pixels in between.
+  let cleared = 0;
+  for (let pixelIndex = 0; pixelIndex < size; pixelIndex++) {
+    const offset = pixelIndex * 4;
+    const score = dominance[pixelIndex];
+    if (score <= KEY_DOMINANCE_OPAQUE) continue;
+
+    if (score >= KEY_DOMINANCE_CLEAR) {
+      rgba[offset + 3] = 0;
+      cleared++;
+      continue;
+    }
+
+    const coverage = (KEY_DOMINANCE_CLEAR - score) / (KEY_DOMINANCE_CLEAR - KEY_DOMINANCE_OPAQUE);
+    rgba[offset + 3] = Math.round(rgba[offset + 3] * coverage);
+
+    // Garment color: mean of the nearby opaque (already despilled) pixels.
+    const x = pixelIndex % width;
+    const y = (pixelIndex - x) / width;
+    const garment = [0, 0, 0];
+    let samples = 0;
+    for (let dy = -UNMIX_SAMPLE_RADIUS; dy <= UNMIX_SAMPLE_RADIUS; dy++) {
+      for (let dx = -UNMIX_SAMPLE_RADIUS; dx <= UNMIX_SAMPLE_RADIUS; dx++) {
+        const sx = x + dx;
+        const sy = y + dy;
+        if (sx < 0 || sy < 0 || sx >= width || sy >= height) continue;
+        const sample = sy * width + sx;
+        if (dominance[sample] > KEY_DOMINANCE_OPAQUE) continue;
+        garment[0] += rgba[sample * 4];
+        garment[1] += rgba[sample * 4 + 1];
+        garment[2] += rgba[sample * 4 + 2];
+        samples++;
+      }
+    }
+
+    if (samples > 0) {
+      for (let channel = 0; channel < 3; channel++) rgba[offset + channel] = Math.round(garment[channel] / samples);
+    } else {
+      // No garment nearby to borrow from (an isolated speck): strip the
+      // whole key lean so it can't read as a colored dot.
+      for (let channel = 0; channel < 3; channel++) {
+        if (keyChannels[channel]) rgba[offset + channel] -= score;
+      }
+    }
+  }
+
+  return cleared;
+}
+
 // A sticker cut by the old border-seeded flood fill (before keyOutBackground
 // replaced it — see its own comment) can have solid, uncut magenta trapped
 // wherever the item's own silhouette encloses a loop or hole: a bag handle,
@@ -408,7 +572,7 @@ async function makeBackgroundTransparent(rawImageDataUri: string, background: Rg
     const decoded = UPNG.decode(pngBytes.buffer);
     const rgba = new Uint8Array(UPNG.toRGBA8(decoded)[0]);
 
-    const cleared = keyOutBackgroundCore(rgba, decoded.width, decoded.height, background);
+    const cleared = keyOutByDominance(rgba, decoded.width, decoded.height, background);
 
     const encoded = UPNG.encode([rgba.buffer], decoded.width, decoded.height, 0);
     const outBase64 = fromByteArray(new Uint8Array(encoded));

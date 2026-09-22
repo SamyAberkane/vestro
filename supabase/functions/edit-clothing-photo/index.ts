@@ -73,22 +73,26 @@ type BackgroundKey = { id: 'magenta' | 'green'; hex: string; label: string; rgb:
 const MAGENTA_KEY: BackgroundKey = { id: 'magenta', hex: '#FF00FF', label: 'magenta', rgb: [255, 0, 255] };
 const GREEN_KEY: BackgroundKey = { id: 'green', hex: '#00FF00', label: 'green', rgb: [0, 255, 0] };
 
-// Mirrors the client's cutout (utils/remove-background.ts): a pixel within
-// KEY_FLAT_TOLERANCE of the key on every channel is plain backdrop; one
-// within KEY_REACH_TOLERANCE is close enough that the client's cutout
-// (BACKGROUND_COLOR_TOLERANCE 80, EDGE_ERODE_MAX_DRIFT 130 there, plus
-// margin) could remove it. Such "reachable" pixels are only legitimate as the
-// thin anti-aliased ring where backdrop meets garment — any further than
-// KEY_FRINGE_WIDTH px from real backdrop are garment the cutout would eat.
-const KEY_FLAT_TOLERANCE = 40;
-const KEY_REACH_TOLERANCE = 140;
+// Mirrors the client's cutout (keyOutByDominance in
+// utils/remove-background.ts), which scores each pixel by how much its key
+// channels exceed its other channels: at or below KEY_DOMINANCE_OPAQUE it's
+// kept as garment, at KEY_DOMINANCE_CLEAR and above it's backdrop, in
+// between it's treated as an edge blend and made partly transparent. Such
+// in-between pixels are only legitimate as the thin blend ring where
+// backdrop meets garment — any further than KEY_FRINGE_WIDTH px from real
+// backdrop are garment the cutout would fade out (a pink garment on magenta).
+const KEY_DOMINANCE_OPAQUE = 50;
+const KEY_DOMINANCE_CLEAR = 150;
 const KEY_FRINGE_WIDTH = 4;
 // Share of the image's pixels that may be at risk before switching key —
 // ~500 px on a 1024² render, so even a small pink logo on an otherwise
-// neutral garment switches rather than coming back with a hole in it. A
-// false positive only costs one extra redraw; green is safe for anything
-// that isn't itself green, and the lower-collision render always wins.
+// neutral garment switches rather than coming back faded. A false positive
+// only costs one extra redraw; the lower-collision render always wins.
 const KEY_COLLISION_MAX_SHARE = 0.0005;
+// Only attempt the green redraw if the magenta one finished within this —
+// one more redraw (<= TIMEOUT_MS) must still fit in the client's
+// EDGE_FUNCTION_TIMEOUT_MS (utils/remove-background.ts).
+const GREEN_RETRY_BUDGET_MS = 40000;
 
 function decodeToRgba(image: { mimeType: string; base64: string }) {
   const bytes = Uint8Array.from(atob(image.base64), (c) => c.charCodeAt(0));
@@ -105,15 +109,22 @@ function decodeToRgba(image: { mimeType: string; base64: string }) {
 function measureKeyCollision(image: { mimeType: string; base64: string }, key: BackgroundKey): number {
   const { rgba, width, height } = decodeToRgba(image);
   const size = width * height;
-  const [kr, kg, kb] = key.rgb;
-  const diff = (i: number) =>
-    Math.max(Math.abs(rgba[i * 4] - kr), Math.abs(rgba[i * 4 + 1] - kg), Math.abs(rgba[i * 4 + 2] - kb));
+  const keyChannels = key.rgb.map((value) => value >= 128);
+  const dominance = (i: number) => {
+    let keyMin = 255;
+    let otherMax = 0;
+    for (let channel = 0; channel < 3; channel++) {
+      if (keyChannels[channel]) keyMin = Math.min(keyMin, rgba[i * 4 + channel]);
+      else otherMax = Math.max(otherMax, rgba[i * 4 + channel]);
+    }
+    return keyMin - otherMax;
+  };
 
-  // BFS distance (in px, capped) from the nearest flat backdrop pixel.
+  // BFS distance (in px, capped) from the nearest real backdrop pixel.
   const distance = new Uint8Array(size).fill(255);
   const queue: number[] = [];
   for (let i = 0; i < size; i++) {
-    if (diff(i) <= KEY_FLAT_TOLERANCE) {
+    if (dominance(i) >= KEY_DOMINANCE_CLEAR) {
       distance[i] = 0;
       queue.push(i);
     }
@@ -133,8 +144,8 @@ function measureKeyCollision(image: { mimeType: string; base64: string }, key: B
 
   let atRisk = 0;
   for (let i = 0; i < size; i++) {
-    const d = diff(i);
-    if (d > KEY_FLAT_TOLERANCE && d <= KEY_REACH_TOLERANCE && distance[i] > KEY_FRINGE_WIDTH) atRisk++;
+    const score = dominance(i);
+    if (score > KEY_DOMINANCE_OPAQUE && score < KEY_DOMINANCE_CLEAR && distance[i] > KEY_FRINGE_WIDTH) atRisk++;
   }
   return atRisk / size;
 }
@@ -198,7 +209,10 @@ function redrawInstruction(key: BackgroundKey): string {
   `${key.label}, with a hard, fully-opaque cutoff where the garment begins: never a soft, fading, ` +
   'feathered, or semi-transparent transition, even along a naturally sheer or wispy edge (a ' +
   'chiffon ruffle, tulle, loose threads, fringe) — draw that edge crisp and fully opaque anyway, ' +
-  'exactly on the true silhouette line, the same way a die-cut sticker would be. This is a goal to ' +
+  'exactly on the true silhouette line. The garment\'s own fabric must meet the background ' +
+  'directly: never draw any outline, contour line, stroke, white border, rim, glow, or ' +
+  'sticker-style margin around the item — not white, not any other color, not even a thin one. ' +
+  'This is a goal to ' +
   'aim for, not a reason to refuse the item: even on a pale, voluminous, or structurally complex ' +
   'garment where a perfectly crisp edge is hard to guarantee, still render your best ' +
   'silhouette and best attempt at a clean edge — an imperfect edge is always better than not ' +
@@ -501,6 +515,43 @@ async function callGemini(
   return { status: 'error' as const, message: 'Échec après nouvelles tentatives', code: 'RETRY_EXHAUSTED' };
 }
 
+// Redraws on magenta, then — when the client can cut against green — checks
+// the render for garment the magenta cutout would eat and, if any, redraws
+// on green and keeps whichever render collides less (see BackgroundKey).
+// The green retry is skipped when the first redraw was already slow, so the
+// whole request stays inside the client's timeout; a slow magenta result
+// still beats a timeout.
+async function redrawWithBestKey(mimeType: string, base64: string, allowGreen: boolean) {
+  const startedAt = Date.now();
+  let key = MAGENTA_KEY;
+  let imageResult = await callGemini(mimeType, base64, redrawInstruction(key), ['IMAGE']);
+  let magentaCollision: number | null = null;
+  let greenCollision: number | null = null;
+
+  if (imageResult.status === 'success' && imageResult.image && allowGreen) {
+    try {
+      magentaCollision = measureKeyCollision(imageResult.image, MAGENTA_KEY);
+      const elapsed = Date.now() - startedAt;
+      if (magentaCollision > KEY_COLLISION_MAX_SHARE && elapsed < GREEN_RETRY_BUDGET_MS) {
+        console.log(`[edit-clothing-photo] garment collides with magenta (${magentaCollision}), redrawing on green`);
+        const greenResult = await callGemini(mimeType, base64, redrawInstruction(GREEN_KEY), ['IMAGE']);
+        if (greenResult.status === 'success' && greenResult.image) {
+          greenCollision = measureKeyCollision(greenResult.image, GREEN_KEY);
+          if (greenCollision < magentaCollision) {
+            key = GREEN_KEY;
+            imageResult = greenResult;
+          }
+        }
+      }
+    } catch (error) {
+      // An undecodable image just means no key check — never a failure.
+      console.error('[edit-clothing-photo] key collision check failed', error);
+    }
+  }
+
+  return { key, imageResult, magentaCollision, greenCollision, ms: Date.now() - startedAt };
+}
+
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') {
     return new Response('ok', { headers: CORS_HEADERS });
@@ -603,28 +654,11 @@ Deno.serve(async (req) => {
       ['TEXT']
     );
 
-    let key = MAGENTA_KEY;
-    let imageResult = await callGemini(body.mimeType, body.base64, redrawInstruction(key), ['IMAGE']);
-
-    if (imageResult.status === 'success' && imageResult.image && body.backgroundKeys?.includes(GREEN_KEY.id)) {
-      try {
-        const magentaCollision = measureKeyCollision(imageResult.image, MAGENTA_KEY);
-        if (magentaCollision > KEY_COLLISION_MAX_SHARE) {
-          console.log(`[edit-clothing-photo] garment collides with magenta (${magentaCollision}), redrawing on green`);
-          const greenResult = await callGemini(body.mimeType, body.base64, redrawInstruction(GREEN_KEY), ['IMAGE']);
-          if (greenResult.status === 'success' && greenResult.image) {
-            const greenCollision = measureKeyCollision(greenResult.image, GREEN_KEY);
-            if (greenCollision < magentaCollision) {
-              key = GREEN_KEY;
-              imageResult = greenResult;
-            }
-          }
-        }
-      } catch (error) {
-        // An undecodable image just means no key check — never a failure.
-        console.error('[edit-clothing-photo] key collision check failed', error);
-      }
-    }
+    const { key, imageResult } = await redrawWithBestKey(
+      body.mimeType,
+      body.base64,
+      Boolean(body.backgroundKeys?.includes(GREEN_KEY.id))
+    );
 
     if (imageResult.status !== 'success' || !imageResult.image) {
       return new Response(JSON.stringify(imageResult), {
