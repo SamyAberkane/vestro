@@ -240,6 +240,16 @@ export default function HomeScreen() {
     });
   }
 
+  // Takes an item off the board from the board itself (its trash button),
+  // whichever category it was picked under.
+  function removeFromBoard(itemId: number) {
+    setSelected((current) =>
+      Object.fromEntries(
+        Object.entries(current).map(([category, ids]) => [category, ids.filter((id) => id !== itemId)])
+      )
+    );
+  }
+
   // Empties the board without touching `layout` — an item added back later
   // still remembers where it used to sit.
   function clearBoard() {
@@ -403,6 +413,7 @@ export default function HomeScreen() {
             width={canvasSize.width}
             height={canvasSize.height}
             showPrice={showPrice}
+            onRemoveItem={removeFromBoard}
           />
         )}
       </View>

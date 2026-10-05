@@ -82,6 +82,7 @@ const fr = {
   'home.languagePickerTitle': 'Langue',
 
   'canvas.empty': 'Choisis des pièces ci-dessous',
+  'canvas.removeItem': 'Retirer la pièce',
 
   'dressing.title': 'Le dressing',
   'dressing.refreshing': 'Actualisation…',
@@ -373,6 +374,7 @@ const en: Dictionary = {
   'home.languagePickerTitle': 'Language',
 
   'canvas.empty': 'Pick pieces below',
+  'canvas.removeItem': 'Remove piece',
 
   'dressing.title': 'My closet',
   'dressing.refreshing': 'Refreshing…',
@@ -661,6 +663,7 @@ const es: Dictionary = {
   'home.languagePickerTitle': 'Idioma',
 
   'canvas.empty': 'Elige prendas abajo',
+  'canvas.removeItem': 'Quitar prenda',
 
   'dressing.title': 'Mi armario',
   'dressing.refreshing': 'Actualizando…',
@@ -949,6 +952,7 @@ const it: Dictionary = {
   'home.languagePickerTitle': 'Lingua',
 
   'canvas.empty': 'Scegli i capi qui sotto',
+  'canvas.removeItem': 'Rimuovi capo',
 
   'dressing.title': 'Il mio armadio',
   'dressing.refreshing': 'Aggiornamento…',

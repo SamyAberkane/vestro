@@ -161,6 +161,16 @@ export default function CreateOutfitScreen() {
     });
   }
 
+  // Takes an item off the board from the board itself (its trash button),
+  // whichever category it was picked under.
+  function removeFromBoard(itemId: number) {
+    setSelected((current) =>
+      Object.fromEntries(
+        Object.entries(current).map(([category, ids]) => [category, ids.filter((id) => id !== itemId)])
+      )
+    );
+  }
+
   // Merges onto whatever's already saved for this item rather than
   // replacing it outright — OutfitCanvas can call this with just a z bump
   // (from tapping/selecting an item, no real position yet) or with just a
@@ -269,13 +279,13 @@ export default function CreateOutfitScreen() {
   }
 
   // Items already in the outfit stay visible on the board even if they've
-  // since become unavailable or moved to the wishlist (clothes, above, is
-  // deliberately unfiltered so it always matches what the Tenues preview
-  // resolves outfit.itemIds against) — but only owned, available items
-  // should be offered as new additions here.
-  const pickableClothes = clothes.filter(
-    (item) => (!item.status || item.status === 'owned') && item.available !== false
-  );
+  // since become unavailable (clothes, above, is deliberately unfiltered so
+  // it always matches what the Tenues preview resolves outfit.itemIds
+  // against) — but only available items are offered as new additions here.
+  // Wishlist items are pickable on purpose: saved outfits are for planning
+  // looks, including ones built around clothes not bought yet. (The home
+  // screen's "today's look" picker stays owned-only — you can't wear a wish.)
+  const pickableClothes = clothes.filter((item) => item.available !== false);
   const availableCategories = VestroCategories.filter((category) =>
     pickableClothes.some((item) => item.category === category)
   );
@@ -356,6 +366,7 @@ export default function CreateOutfitScreen() {
                 width={canvasSize.width}
                 height={canvasSize.height}
                 showPrice={showPrice}
+                onRemoveItem={removeFromBoard}
               />
             )}
 
@@ -443,6 +454,11 @@ export default function CreateOutfitScreen() {
                         containerStyle={styles.thumbnailImage}
                         resizeMode="cover"
                       />
+                    )}
+                    {item.status === 'wishlist' && (
+                      <View style={styles.wishBadge}>
+                        <Text style={styles.wishBadgeText}>{t('wishlist.badge')}</Text>
+                      </View>
                     )}
                     {isSelected && (
                       <View style={styles.checkBadge}>
@@ -665,6 +681,21 @@ const createStyles = (VestroColors: AppColors) => StyleSheet.create({
     backgroundColor: VestroColors.ink,
     alignItems: 'center',
     justifyContent: 'center',
+  },
+  wishBadge: {
+    position: 'absolute',
+    bottom: 6,
+    left: 6,
+    paddingHorizontal: 5,
+    paddingVertical: 2,
+    backgroundColor: VestroColors.background,
+  },
+  wishBadgeText: {
+    fontFamily: VestroFonts.sansBold,
+    fontSize: 9,
+    letterSpacing: 1,
+    textTransform: 'uppercase',
+    color: VestroColors.accent,
   },
   checkGlyph: {
     fontFamily: VestroFonts.sansSemiBold,

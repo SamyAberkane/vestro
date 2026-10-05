@@ -20,10 +20,9 @@ import { useEffect, useState } from 'react';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import 'react-native-reanimated';
 
-import { View } from 'react-native';
-
 import { AuthProvider, useAuth } from '@/auth/context';
 import { AlertHost } from '@/components/alert-host';
+import { LaunchLoader } from '@/components/launch-loader';
 import { Onboarding } from '@/components/onboarding';
 import { I18nProvider } from '@/i18n/context';
 import { optimizeStoredImages, recutStoredImageBackgrounds } from '@/lib/clothing';
@@ -60,7 +59,7 @@ SplashScreen.preventAutoHideAsync();
 
 function RootNavigator() {
   const { isSignedIn, isLoading } = useAuth();
-  const { scheme, colors } = useAppTheme();
+  const { scheme } = useAppTheme();
   const [onboardingSeen, setOnboardingSeen] = useState<boolean | null>(null);
 
   useEffect(() => {
@@ -98,7 +97,7 @@ function RootNavigator() {
   // (has_active_premium() — see supabase/schema.sql), not by this gate. Only
   // onboarding's one-time seen-flag still blocks the first paint.
   if (isLoading || onboardingSeen === null) {
-    return <View style={{ flex: 1, backgroundColor: colors.background }} />;
+    return <LaunchLoader />;
   }
 
   return (

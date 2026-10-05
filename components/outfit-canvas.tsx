@@ -1,6 +1,7 @@
+import { Ionicons } from '@expo/vector-icons';
 import { Image } from 'expo-image';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { StyleSheet, Text, View } from 'react-native';
+import { StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import Animated, {
   runOnJS,
@@ -15,6 +16,7 @@ import type { Language } from '@/i18n/translations';
 import { formatPrice as formatCurrency } from '@/utils/currency';
 
 const SELECTION_BLUE = '#2F7CF6';
+const DESTRUCTIVE_RED = '#DC2626';
 
 // x/y are fractions (0..1) of the canvas' usable travel range (canvas size
 // minus the item's own footprint), NOT pixels — so "all the way at the
@@ -544,6 +546,7 @@ export function OutfitCanvas({
   width = CANVAS_REFERENCE_SIZE.width,
   height = CANVAS_REFERENCE_SIZE.height,
   showPrice = false,
+  onRemoveItem,
 }: {
   items: CanvasItem[];
   layout: Record<number, CanvasLayout>;
@@ -551,6 +554,9 @@ export function OutfitCanvas({
   width?: number;
   height?: number;
   showPrice?: boolean;
+  /** When given, selecting an item shows a trash button that takes it off
+   * the board. */
+  onRemoveItem?: (itemId: number) => void;
 }) {
   const { t, language } = useI18n();
   const [selectedId, setSelectedId] = useState<number | null>(null);
@@ -678,6 +684,9 @@ export function OutfitCanvas({
   }
 
   const resolved = resolveLayout(items, layout);
+  // selectedId can outlive its item (e.g. removed from the picker below the
+  // board instead), so only treat it as selected while it's still on it.
+  const selectedItemOnBoard = items.find((item) => item.id === selectedId);
 
   // handleBoardTap needs this render's `resolved`/`selectedId` to hit-test
   // correctly, but boardTap below stays memoized regardless (deps: just
@@ -769,6 +778,28 @@ export function OutfitCanvas({
           ))}
         </Animated.View>
       </GestureDetector>
+
+      {/* Pinned to the board's corner rather than riding along on the item
+          itself: an item can hang half off the board (see
+          MAX_OVERFLOW_FRACTION), where a button attached to it would be
+          clipped by the frame, and its own corners already hold the resize
+          handles. Sits outside the board's GestureDetector so pressing it
+          never also registers as a board tap. Hidden while zooming, like
+          every other editing affordance. */}
+      {onRemoveItem && selectedItemOnBoard && !isZooming && (
+        <TouchableOpacity
+          style={styles.removeButton}
+          onPress={() => {
+            onRemoveItem(selectedItemOnBoard.id);
+            setSelectedId(null);
+          }}
+          accessibilityRole="button"
+          accessibilityLabel={t('canvas.removeItem')}
+          hitSlop={8}
+        >
+          <Ionicons name="trash-outline" size={18} color={DESTRUCTIVE_RED} />
+        </TouchableOpacity>
+      )}
 
       {priceLabel && (
         <View style={styles.priceTag} pointerEvents="none">
@@ -940,6 +971,21 @@ const styles = StyleSheet.create({
   handle_bottomRight: {
     right: -9,
     bottom: -9,
+  },
+  removeButton: {
+    position: 'absolute',
+    // Same reason as priceTag below: above every draggable item.
+    zIndex: PRICE_TAG_Z_INDEX,
+    top: 10,
+    right: 10,
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: '#FFFFFF',
+    borderWidth: 1,
+    borderColor: VestroColors.frame,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   priceTag: {
     position: 'absolute',
