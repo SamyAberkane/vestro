@@ -4,9 +4,10 @@
 // app. `verify_jwt` (the Supabase Functions default) already rejects any
 // request without a valid signed-in user's token before this code runs; this
 // function additionally checks the caller has an active, server-verified
-// subscription (see public.has_active_premium() in supabase/schema.sql) —
-// Vestro has no free tier, and this call is the actual cost driver, so it's
-// gated the same way the database rows are, not just "is signed in".
+// subscription (see public.has_active_premium() in supabase/schema.sql), or
+// else consumes one of the account's 4 lifetime free credits (see
+// public.consume_free_credit) — this call is the actual cost driver, so it's
+// gated server-side, not just "is signed in".
 //
 // This does NOT try to cut out the exact photographed pixels — it asks
 // Gemini to *redraw* the item as a clean, flat, catalog-style product shot
@@ -564,6 +565,8 @@ Deno.serve(async (req) => {
     );
   }
 
+  let refundFreeCredit: (() => Promise<void>) | null = null;
+
   try {
     const authHeader = req.headers.get('Authorization');
     if (!authHeader) {
@@ -588,10 +591,10 @@ Deno.serve(async (req) => {
     }
 
     const { data: isPremium, error: premiumError } = await callerClient.rpc('has_active_premium');
-    if (premiumError || !isPremium) {
+    if (premiumError) {
       return new Response(
-        JSON.stringify({ status: 'error', message: 'Abonnement requis', code: 'SUBSCRIPTION' }),
-        { status: 403, headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' } }
+        JSON.stringify({ status: 'error', message: 'Vérification de l\'abonnement impossible', code: 'SERVER' }),
+        { status: 500, headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' } }
       );
     }
 
@@ -607,7 +610,30 @@ Deno.serve(async (req) => {
     const adminClient = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
     const periodStart = currentPeriodStart();
 
-    if (!body.classifyOnly) {
+    if (!isPremium) {
+      if (body.classifyOnly) {
+        return new Response(
+          JSON.stringify({ status: 'error', message: 'Abonnement requis', code: 'SUBSCRIPTION' }),
+          { status: 403, headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' } }
+        );
+      }
+      // Reserved atomically before the Gemini call so parallel requests can't
+      // overspend the allowance; refunded below if no image comes back.
+      const { data: reserved, error: reserveError } = await adminClient.rpc('consume_free_credit', {
+        p_user_id: user.id,
+      });
+      if (reserveError || !reserved) {
+        if (reserveError) console.error('[edit-clothing-photo] consume_free_credit failed', reserveError);
+        return new Response(
+          JSON.stringify({ status: 'error', message: 'Crédits gratuits épuisés', code: 'FREE_LIMIT' }),
+          { status: 403, headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' } }
+        );
+      }
+      refundFreeCredit = async () => {
+        const { error } = await adminClient.rpc('refund_free_credit', { p_user_id: user.id });
+        if (error) console.error('[edit-clothing-photo] refund_free_credit failed', error);
+      };
+    } else if (!body.classifyOnly) {
       const { data: usage } = await adminClient
         .from('photo_usage')
         .select('count, period_start')
@@ -661,11 +687,14 @@ Deno.serve(async (req) => {
     );
 
     if (imageResult.status !== 'success' || !imageResult.image) {
+      await refundFreeCredit?.();
       return new Response(JSON.stringify(imageResult), {
         status: 502,
         headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
       });
     }
+
+    refundFreeCredit = null;
 
     const { error: usageError } = await adminClient.rpc('increment_photo_usage', {
       p_user_id: user.id,
@@ -693,6 +722,7 @@ Deno.serve(async (req) => {
       headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
     });
   } catch (error) {
+    await refundFreeCredit?.();
     const message = error instanceof Error ? error.message : String(error);
     return new Response(JSON.stringify({ status: 'error', message, code: 'SERVER' }), {
       status: 400,
