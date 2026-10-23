@@ -641,7 +641,18 @@ Deno.serve(async (req) => {
         .maybeSingle();
 
       const usedThisMonth = usage?.period_start === periodStart ? usage.count : 0;
-      if (usedThisMonth >= MONTHLY_PHOTO_LIMIT) {
+      // Premium is 50 monthly credits plus whatever free credits are left, so
+      // once the month's 50 are spent, fall back to those.
+      const { data: reservedFree } =
+        usedThisMonth >= MONTHLY_PHOTO_LIMIT
+          ? await adminClient.rpc('consume_free_credit', { p_user_id: user.id })
+          : { data: false };
+      if (reservedFree) {
+        refundFreeCredit = async () => {
+          const { error } = await adminClient.rpc('refund_free_credit', { p_user_id: user.id });
+          if (error) console.error('[edit-clothing-photo] refund_free_credit failed', error);
+        };
+      } else if (usedThisMonth >= MONTHLY_PHOTO_LIMIT) {
         return new Response(
           JSON.stringify({
             status: 'error',
