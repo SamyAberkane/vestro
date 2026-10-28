@@ -112,9 +112,14 @@ type AppleTransactionInfo = {
 // sandbox, which is where App Review's own sandbox transactions actually
 // live. That looked like "the in-app purchase is broken" to reviewers
 // (Guideline 2.1(b)) when it was really just this fallback never running.
-async function fetchTransactionInfo(transactionId: string, appleJwt: string): Promise<AppleTransactionInfo> {
+//
+// Returns null when neither environment knows the transaction (404 on both):
+// e.g. a sandbox tester whose purchase history was cleared while the device
+// still holds the old transaction. That's "not premium", not a server error.
+async function fetchTransactionInfo(transactionId: string, appleJwt: string): Promise<AppleTransactionInfo | null> {
   const hosts = ['https://api.storekit.itunes.apple.com', 'https://api.storekit-sandbox.itunes.apple.com'];
   let lastError: string | null = null;
+  let notFoundEverywhere = true;
 
   for (const host of hosts) {
     const response = await fetch(`${host}/inApps/v1/transactions/${transactionId}`, {
@@ -122,6 +127,7 @@ async function fetchTransactionInfo(transactionId: string, appleJwt: string): Pr
     });
 
     if (!response.ok) {
+      if (response.status !== 404) notFoundEverywhere = false;
       lastError = `HTTP ${response.status} (${host})`;
       continue;
     }
@@ -131,6 +137,7 @@ async function fetchTransactionInfo(transactionId: string, appleJwt: string): Pr
     return base64urlDecodeToJson<AppleTransactionInfo>(payload);
   }
 
+  if (notFoundEverywhere) return null;
   throw new Error(
     lastError
       ? `Transaction introuvable côté Apple (${lastError})`
@@ -229,6 +236,10 @@ Deno.serve(async (req) => {
       }
 
       const info = await fetchTransactionInfo(transactionId, appleJwt);
+      if (!info) {
+        console.warn('[verify-purchase] transaction unknown to Apple', transactionId);
+        return json({ isPremium: false, expiresAt: null, message: 'Transaction inconnue chez Apple' });
+      }
       if (info.bundleId !== APPLE_BUNDLE_ID || info.productId !== MONTHLY_SKU) {
         return json({ message: 'Cette transaction ne correspond pas à cette app/produit' }, 400);
       }
