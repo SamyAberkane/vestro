@@ -30,10 +30,14 @@ const GEMINI_ENDPOINT = `https://generativelanguage.googleapis.com/v1beta/models
 // Each redraw call is a real Gemini image-generation cost (~$0.03), so even a
 // paying subscriber gets a monthly cap rather than unlimited calls — see
 // public.photo_usage in supabase/schema.sql. A classifyOnly retry doesn't
-// count (no new image generated), but a redraw call that the model itself
+// count toward it (no new image generated; see MONTHLY_CLASSIFY_LIMIT), but a redraw call that the model itself
 // flagged "usable: false" still does — Gemini already generated (and billed)
 // the image before making that call, so the cost happened either way.
 const MONTHLY_PHOTO_LIMIT = 50;
+// classifyOnly calls are cheap text-only requests the client only sends as a
+// retry after a redraw that dropped the name/category (at most a couple per
+// photo), but they still cost a Gemini call each, so they get their own cap.
+const MONTHLY_CLASSIFY_LIMIT = 150;
 
 const TIMEOUT_MS = 45000;
 const MAX_RETRIES_ON_RATE_LIMIT = 1;
@@ -565,7 +569,7 @@ Deno.serve(async (req) => {
     );
   }
 
-  let refundFreeCredit: (() => Promise<void>) | null = null;
+  let refundReservation: (() => Promise<void>) | null = null;
 
   try {
     const authHeader = req.headers.get('Authorization');
@@ -629,30 +633,65 @@ Deno.serve(async (req) => {
           { status: 403, headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' } }
         );
       }
-      refundFreeCredit = async () => {
+      refundReservation = async () => {
         const { error } = await adminClient.rpc('refund_free_credit', { p_user_id: user.id });
         if (error) console.error('[edit-clothing-photo] refund_free_credit failed', error);
       };
-    } else if (!body.classifyOnly) {
-      const { data: usage } = await adminClient
-        .from('photo_usage')
-        .select('count, period_start')
-        .eq('user_id', user.id)
-        .maybeSingle();
-
-      const usedThisMonth = usage?.period_start === periodStart ? usage.count : 0;
+    } else if (body.classifyOnly) {
+      const { data: reserved, error: reserveError } = await adminClient.rpc('reserve_usage', {
+        p_user_id: user.id,
+        p_period_start: periodStart,
+        p_limit: MONTHLY_CLASSIFY_LIMIT,
+        p_classify: true,
+      });
+      if (reserveError) {
+        console.error('[edit-clothing-photo] reserve_usage (classify) failed', reserveError);
+        return new Response(
+          JSON.stringify({ status: 'error', message: 'Erreur serveur', code: 'SERVER' }),
+          { status: 500, headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' } }
+        );
+      }
+      if (!reserved) {
+        return new Response(
+          JSON.stringify({ status: 'error', code: 'quota_exceeded', message: 'Limite mensuelle atteinte.' }),
+          { status: 429, headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' } }
+        );
+      }
+    } else {
+      // Reserved atomically before the Gemini call, like the free credits
+      // above, so parallel requests can't push past the monthly cap.
+      const { data: reserved, error: reserveError } = await adminClient.rpc('reserve_usage', {
+        p_user_id: user.id,
+        p_period_start: periodStart,
+        p_limit: MONTHLY_PHOTO_LIMIT,
+        p_classify: false,
+      });
+      if (reserveError) {
+        console.error('[edit-clothing-photo] reserve_usage failed', reserveError);
+        return new Response(
+          JSON.stringify({ status: 'error', message: 'Erreur serveur', code: 'SERVER' }),
+          { status: 500, headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' } }
+        );
+      }
       // Premium is 50 monthly credits plus whatever free credits are left, so
       // once the month's 50 are spent, fall back to those.
-      const { data: reservedFree } =
-        usedThisMonth >= MONTHLY_PHOTO_LIMIT
-          ? await adminClient.rpc('consume_free_credit', { p_user_id: user.id })
-          : { data: false };
-      if (reservedFree) {
-        refundFreeCredit = async () => {
+      const { data: reservedFree } = reserved
+        ? { data: false }
+        : await adminClient.rpc('consume_free_credit', { p_user_id: user.id });
+      if (reserved) {
+        refundReservation = async () => {
+          const { error } = await adminClient.rpc('release_usage', {
+            p_user_id: user.id,
+            p_period_start: periodStart,
+          });
+          if (error) console.error('[edit-clothing-photo] release_usage failed', error);
+        };
+      } else if (reservedFree) {
+        refundReservation = async () => {
           const { error } = await adminClient.rpc('refund_free_credit', { p_user_id: user.id });
           if (error) console.error('[edit-clothing-photo] refund_free_credit failed', error);
         };
-      } else if (usedThisMonth >= MONTHLY_PHOTO_LIMIT) {
+      } else {
         return new Response(
           JSON.stringify({
             status: 'error',
@@ -698,20 +737,14 @@ Deno.serve(async (req) => {
     );
 
     if (imageResult.status !== 'success' || !imageResult.image) {
-      await refundFreeCredit?.();
+      await refundReservation?.();
       return new Response(JSON.stringify(imageResult), {
         status: 502,
         headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
       });
     }
 
-    refundFreeCredit = null;
-
-    const { error: usageError } = await adminClient.rpc('increment_photo_usage', {
-      p_user_id: user.id,
-      p_period_start: periodStart,
-    });
-    if (usageError) console.error('[edit-clothing-photo] échec incrément photo_usage', usageError);
+    refundReservation = null;
 
     // Best-effort: a failed classification here still leaves a perfectly
     // usable image — the client already retries classification-only on a
@@ -733,7 +766,7 @@ Deno.serve(async (req) => {
       headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
     });
   } catch (error) {
-    await refundFreeCredit?.();
+    await refundReservation?.();
     const message = error instanceof Error ? error.message : String(error);
     return new Response(JSON.stringify({ status: 'error', message, code: 'SERVER' }), {
       status: 400,

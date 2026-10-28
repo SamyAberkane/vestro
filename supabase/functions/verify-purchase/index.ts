@@ -247,6 +247,18 @@ Deno.serve(async (req) => {
           : null;
     }
 
+    // One subscription backs one Crystal account at a time: the account that
+    // just proved this transaction with Apple takes it over (e.g. the same
+    // Apple ID restoring on a second account), and any other account it was
+    // attached to loses it — so a shared transaction id can't make several
+    // accounts premium at once. Enforced by premium_entitlements_original_tx_key.
+    const { error: detachError } = await adminClient
+      .from('premium_entitlements')
+      .update({ is_active: false, original_transaction_id: null, updated_at: new Date().toISOString() })
+      .eq('original_transaction_id', originalTransactionId)
+      .neq('user_id', user.id);
+    if (detachError) throw detachError;
+
     const { error: upsertError } = await adminClient.from('premium_entitlements').upsert({
       user_id: user.id,
       is_active: isActive,
