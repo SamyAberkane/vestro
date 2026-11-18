@@ -1,4 +1,8 @@
 {
   "NSPhotoLibraryUsageDescription": "Crystal : AI Closet accede alle tue foto per aggiungere capi al tuo armadio.",
-  "NSLocationWhenInUseUsageDescription": "Crystal : AI Closet usa la tua posizione per mostrare il meteo di oggi."
+  "NSCameraUsageDescription": "Crystal : AI Closet usa la fotocamera per fotografare i tuoi capi.",
+  "NSMicrophoneUsageDescription": "Crystal : AI Closet usa il microfono per la registrazione audio.",
+  "NSLocationWhenInUseUsageDescription": "Crystal : AI Closet usa la tua posizione per mostrare il meteo di oggi.",
+  "NSLocationAlwaysAndWhenInUseUsageDescription": "Crystal : AI Closet usa la tua posizione per mostrare il meteo di oggi.",
+  "NSLocationAlwaysUsageDescription": "Crystal : AI Closet usa la tua posizione per mostrare il meteo di oggi."
 }
