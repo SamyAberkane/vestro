@@ -5,7 +5,7 @@
 // request without a valid signed-in user's token before this code runs; this
 // function additionally checks the caller has an active, server-verified
 // subscription (see public.has_active_premium() in supabase/schema.sql), or
-// else consumes one of the account's 4 lifetime free credits (see
+// else consumes one of the account's 3 lifetime free credits (see
 // public.consume_free_credit) — this call is the actual cost driver, so it's
 // gated server-side, not just "is signed in".
 //
@@ -33,7 +33,7 @@ const GEMINI_ENDPOINT = `https://generativelanguage.googleapis.com/v1beta/models
 // count toward it (no new image generated; see MONTHLY_CLASSIFY_LIMIT), but a redraw call that the model itself
 // flagged "usable: false" still does — Gemini already generated (and billed)
 // the image before making that call, so the cost happened either way.
-const MONTHLY_PHOTO_LIMIT = 50;
+const MONTHLY_PHOTO_LIMIT = 30;
 // classifyOnly calls are cheap text-only requests the client only sends as a
 // retry after a redraw that dropped the name/category (at most a couple per
 // photo), but they still cost a Gemini call each, so they get their own cap.
@@ -707,8 +707,8 @@ Deno.serve(async (req) => {
           { status: 500, headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' } }
         );
       }
-      // Premium is 50 monthly credits plus whatever free credits are left, so
-      // once the month's 50 are spent, fall back to those.
+      // Premium is 30 monthly credits plus whatever free credits are left, so
+      // once the month's 30 are spent, fall back to those.
       const { data: reservedFree } = reserved
         ? { data: false }
         : await adminClient.rpc('consume_free_credit', { p_user_id: user.id });
