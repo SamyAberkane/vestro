@@ -730,6 +730,18 @@ Deno.serve(async (req) => {
       ['TEXT']
     );
 
+    // This inline classification is a real Gemini call on every photo, so it
+    // is counted in photo_usage.classify_count like a classifyOnly call. It is
+    // a counter only: the huge limit means it never refuses, and a failure to
+    // count never blocks the photo.
+    const { error: classifyCountError } = await adminClient.rpc('reserve_usage', {
+      p_user_id: user.id,
+      p_period_start: periodStart,
+      p_limit: 2147483647,
+      p_classify: true,
+    });
+    if (classifyCountError) console.error('[edit-clothing-photo] classify count failed', classifyCountError);
+
     const { key, imageResult } = await redrawWithBestKey(
       body.mimeType,
       body.base64,
