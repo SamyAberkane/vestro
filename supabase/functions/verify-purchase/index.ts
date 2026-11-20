@@ -16,7 +16,8 @@ const APPLE_KEY_ID = Deno.env.get('APPLE_KEY_ID')!;
 const APPLE_PRIVATE_KEY = Deno.env.get('APPLE_PRIVATE_KEY')!;
 
 const APPLE_BUNDLE_ID = 'com.yoldas.crystalcloset';
-const MONTHLY_SKU = 'com.tailor.vestro.monthly';
+// Both plans of the Premium subscription group (monthly, and yearly since 2.2).
+const PREMIUM_SKUS = new Set(['com.tailor.vestro.monthly', 'com.tailor.vestro.annual']);
 
 const CORS_HEADERS = {
   'Access-Control-Allow-Origin': '*',
@@ -179,7 +180,7 @@ async function fetchSubscriptionStatus(
 
     const [, payload] = last.signedTransactionInfo.split('.');
     const info = base64urlDecodeToJson<AppleTransactionInfo>(payload);
-    if (info.bundleId !== APPLE_BUNDLE_ID || info.productId !== MONTHLY_SKU) return null;
+    if (info.bundleId !== APPLE_BUNDLE_ID || !PREMIUM_SKUS.has(info.productId)) return null;
 
     // Billing retry (3) is deliberately not active: Apple hasn't collected
     // payment and there's no grace period in effect.
@@ -240,7 +241,7 @@ Deno.serve(async (req) => {
         console.warn('[verify-purchase] transaction unknown to Apple', transactionId);
         return json({ isPremium: false, expiresAt: null, message: 'Transaction inconnue chez Apple' });
       }
-      if (info.bundleId !== APPLE_BUNDLE_ID || info.productId !== MONTHLY_SKU) {
+      if (info.bundleId !== APPLE_BUNDLE_ID || !PREMIUM_SKUS.has(info.productId)) {
         return json({ message: 'Cette transaction ne correspond pas à cette app/produit' }, 400);
       }
 
