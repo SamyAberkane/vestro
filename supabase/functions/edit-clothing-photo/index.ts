@@ -283,21 +283,55 @@ const PHOTO_ISSUE_CODES = [
   'other',
 ] as const;
 
-type Language = 'fr' | 'en' | 'es' | 'it';
-
-const METADATA_NAME_LANGUAGE: Record<Language, string> = {
+const METADATA_NAME_LANGUAGE = {
   fr: 'French',
   en: 'English',
   es: 'Spanish',
   it: 'Italian',
-};
+  de: 'German',
+  pt: 'Portuguese (European)',
+  nl: 'Dutch',
+  sv: 'Swedish',
+  da: 'Danish',
+  nb: 'Norwegian Bokmål',
+  fi: 'Finnish',
+  pl: 'Polish',
+  cs: 'Czech',
+  ro: 'Romanian',
+  hu: 'Hungarian',
+  tr: 'Turkish',
+  id: 'Indonesian',
+} as const;
+
+type Language = keyof typeof METADATA_NAME_LANGUAGE;
 
 const METADATA_NAME_EXAMPLE: Record<Language, string> = {
   fr: '"Chemise blanche", "Jean droit bleu"',
   en: '"White shirt", "Straight blue jeans"',
   es: '"Camisa blanca", "Vaqueros rectos azules"',
   it: '"Camicia bianca", "Jeans dritti blu"',
+  de: '"Weißes Hemd", "Blaue gerade Jeans"',
+  pt: '"Camisa branca", "Calças de ganga retas azuis"',
+  nl: '"Wit overhemd", "Blauwe rechte jeans"',
+  sv: '"Vit skjorta", "Blå raka jeans"',
+  da: '"Hvid skjorte", "Blå lige jeans"',
+  nb: '"Hvit skjorte", "Blå rette jeans"',
+  fi: '"Valkoinen kauluspaita", "Siniset suorat farkut"',
+  pl: '"Biała koszula", "Niebieskie proste jeansy"',
+  cs: '"Bílá košile", "Modré rovné džíny"',
+  ro: '"Cămașă albă", "Blugi drepți albaștri"',
+  hu: '"Fehér ing", "Kék egyenes farmer"',
+  tr: '"Beyaz gömlek", "Mavi düz kesim kot"',
+  id: '"Kemeja putih", "Jeans lurus biru"',
 };
+
+// Any app version may send any string here; unknown values fall back to English
+// instead of putting "undefined" into the prompt.
+function parseLanguage(value: unknown): Language {
+  return typeof value === 'string' && Object.hasOwn(METADATA_NAME_LANGUAGE, value)
+    ? (value as Language)
+    : 'en';
+}
 
 function classificationInstruction(language: Language): string {
   return (
@@ -372,7 +406,7 @@ function buildClassifyOnlyPrompt(language: Language): string {
 }
 
 type RequestBody = {
-  language?: Language;
+  language?: string;
   mimeType: string;
   base64: string;
   // Skips the (slow) image redraw and only asks Gemini to classify the photo
@@ -707,7 +741,7 @@ Deno.serve(async (req) => {
       const result = await callGemini(
         body.mimeType,
         body.base64,
-        buildClassifyOnlyPrompt(body.language ?? 'fr'),
+        buildClassifyOnlyPrompt(parseLanguage(body.language ?? 'fr')),
         ['TEXT']
       );
       return new Response(JSON.stringify(result), {
@@ -726,7 +760,7 @@ Deno.serve(async (req) => {
     const classifyPromise = callGemini(
       body.mimeType,
       body.base64,
-      buildClassifyOnlyPrompt(body.language ?? 'fr'),
+      buildClassifyOnlyPrompt(parseLanguage(body.language ?? 'fr')),
       ['TEXT']
     );
 
